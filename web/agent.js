@@ -19,7 +19,7 @@ export function mount(adapter) {
     </style>
     <section>
       <h2>Jev · wilderness experiment</h2>
-      <small>Input: own troops only (display units).<br>Actions: wait / 0% / 10% / 20%. Local solo only.</small>
+      <small>Input: own troops + capacity (display units).<br>Target: 30% reserve. Actions: wait / 0% / 10% / 20%.<br>Local solo only.</small>
       <div>
         <label>Interval (s) <input id="interval" aria-label="Decision interval seconds" type="number" min="1" max="30" value="1"></label>
         <label>Calls <input id="limit" aria-label="Request limit" type="number" min="1" max="300" value="30"></label>
@@ -60,7 +60,8 @@ export function mount(adapter) {
       if (event.decision) {
         const d = event.decision;
         const item = document.createElement("li");
-        item.textContent = `${d.action} · troops ${d.troops} · ${d.latencyMs}ms · confidence ${d.confidence}\n${d.outcome}\n${JSON.stringify(d.probabilities)}`;
+        const reservePercent = ((100 * d.troops) / d.troop_capacity).toFixed(1);
+        item.textContent = `${d.action} · troops ${d.troops}/${d.troop_capacity} (${reservePercent}%) · ${d.latencyMs}ms · confidence ${d.confidence}\n${d.outcome}\n${JSON.stringify(d.probabilities)}`;
         $("history").prepend(item);
         while ($("history").children.length > 30)
           $("history").lastChild.remove();

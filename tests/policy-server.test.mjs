@@ -6,6 +6,7 @@ import {
   parseDecision,
   ACTIONS,
   validateObservation,
+  POLICY_VERSION,
 } from "../src/policy.mjs";
 import { createAgentServer } from "../src/server.mjs";
 
@@ -24,9 +25,14 @@ const response = (action = "attack_10") => ({
   },
 });
 
-test("request exposes exactly one observation and the four specified choices", () => {
-  const request = buildRequest({ troops: 2500 });
-  assert.deepEqual(request.state, { troops: 2500 });
+const observation = (troops = 2500, troop_capacity = 12000) => ({
+  troops,
+  troop_capacity,
+});
+
+test("request exposes only troops and capacity with the four specified choices", () => {
+  const request = buildRequest(observation());
+  assert.deepEqual(request.state, { troops: 2500, troop_capacity: 12000 });
   assert.deepEqual(Object.keys(request.questions), ["action"]);
   assert.deepEqual(Object.keys(request.questions.action.criteria), [
     "wait",
@@ -36,15 +42,41 @@ test("request exposes exactly one observation and the four specified choices", (
   ]);
 });
 
-test("rejects extra state, invalid troop counts, and unsupported actions", () => {
+test("reserve prompt encodes the agreed strategy, not harness timing", () => {
+  const instructions =
+    buildRequest(observation()).questions.action.instructions.join(" ");
+  assert.match(instructions, /30%/);
+  assert.match(instructions, /31\.6%/);
+  assert.match(instructions, /35\.3%/);
+  assert.match(instructions, /100 \* troops \/ troop_capacity/);
+  assert.doesNotMatch(instructions, /second|interval|poll|latency|timer/i);
+  assert.equal(POLICY_VERSION, "wilderness-reserve-v2");
+});
+
+test("accepts zero troops and reserves temporarily above capacity", () => {
+  assert.deepEqual(validateObservation(observation(0)), observation(0));
+  assert.deepEqual(validateObservation(observation(13000)), observation(13000));
+});
+
+test("rejects missing capacity, extra state, invalid counts, and unsupported actions", () => {
   for (const value of [
     null,
     [],
     {},
-    { troops: -1 },
-    { troops: NaN },
-    { troops: Infinity },
-    { troops: "2500" },
+    { troops: 2500 },
+    { troop_capacity: 12000 },
+    observation(-1),
+    observation(NaN),
+    observation(Infinity),
+    observation("2500"),
+    observation(1e10),
+    observation(2500, 0),
+    observation(2500, -1),
+    observation(2500, NaN),
+    observation(2500, Infinity),
+    observation(2500, "12000"),
+    observation(2500, 1e10),
+    { ...observation(), enemy: "extra" },
     { troops: 2, capacity: 5 },
   ]) {
     assert.throws(() => validateObservation(value));
@@ -86,7 +118,7 @@ test("HTTP bridge authenticates upstream only and logs the actual request/answer
     },
     log: async (record) => logs.push(record),
   });
-  const reply = await post(url, { troops: 2500 });
+  const reply = await post(url, observation());
   assert.equal(reply.status, 200);
   assert.equal(
     reply.headers.get("access-control-allow-origin"),
@@ -96,7 +128,7 @@ test("HTTP bridge authenticates upstream only and logs the actual request/answer
   assert.equal(result.action, "attack_10");
   assert.equal(calls[0][0], "https://api.typesafe.ai/v1/systemone");
   assert.equal(calls[0][1].headers.Authorization, "Bearer fake-test-secret");
-  assert.deepEqual(JSON.parse(calls[0][1].body).state, { troops: 2500 });
+  assert.deepEqual(JSON.parse(calls[0][1].body).state, observation());
   assert.equal(logs.length, 1);
   assert.ok(!JSON.stringify({ result, logs }).includes("fake-test-secret"));
   assert.ok(Number.isFinite(Date.parse(logs[0].requestStartedAt)));
@@ -113,7 +145,7 @@ test("the sidecar paces early arrivals without 429 or overlapping inference", as
     },
   });
   for (let i = 0; i < 3; i++) {
-    const reply = await post(url, { troops: 2500 });
+    const reply = await post(url, observation());
     assert.equal(reply.status, 200);
     await reply.json();
   }
@@ -138,9 +170,9 @@ test("the sidecar rejects a second request while inference is outstanding", asyn
       });
     },
   });
-  const first = post(url, { troops: 2500 });
+  const first = post(url, observation());
   await started;
-  assert.equal((await post(url, { troops: 2600 })).status, 429);
+  assert.equal((await post(url, observation(2600))).status, 429);
   assert.equal(calls, 1);
   resolveInference(new Response(JSON.stringify(response())));
   assert.equal((await first).status, 200);
@@ -155,10 +187,14 @@ test("rejects foreign origins, malformed observations, and untrusted hosts befor
     },
   });
   assert.equal(
-    (await post(url, { troops: 100 }, "https://evil.example")).status,
+    (await post(url, observation(100), "https://evil.example")).status,
     403,
   );
-  assert.equal((await post(url, { troops: 100, enemy: "extra" })).status, 400);
+  assert.equal(
+    (await post(url, { ...observation(100), enemy: "extra" })).status,
+    400,
+  );
+  assert.equal((await post(url, { troops: 100 })).status, 400);
   const hostStatus = await new Promise((resolve, reject) => {
     get(url + "/health", { headers: { Host: "evil.example" } }, (res) => {
       res.resume();
@@ -174,13 +210,13 @@ test("upstream errors are bounded and contain no upstream body or key", async (t
     apiKey: "fake-secret",
     fetchImpl: async () => new Response("fake-secret", { status: 401 }),
   });
-  const reply = await post(url, { troops: 100 });
+  const reply = await post(url, observation(100));
   assert.equal(reply.status, 502);
   assert.deepEqual(await reply.json(), { error: "TypeSafe HTTP 401" });
 });
 
 test("missing key does not make a model request", async (t) => {
   const url = await serve(t, {});
-  assert.equal((await post(url, { troops: 100 })).status, 503);
+  assert.equal((await post(url, observation(100))).status, 503);
   assert.equal((await fetch(url + "/agent.js")).status, 200);
 });

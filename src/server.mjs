@@ -6,6 +6,7 @@ import {
   buildRequest,
   parseDecision,
   POLICY_VERSION,
+  OBSERVATION_ERROR,
   validateObservation,
 } from "./policy.mjs";
 
@@ -95,9 +96,7 @@ export function createAgentServer({
         JSON.parse(Buffer.concat(chunks).toString()),
       );
     } catch {
-      return send(400, {
-        error: "Expected exactly {troops: a finite number between 0 and 1e9}",
-      });
+      return send(400, { error: OBSERVATION_ERROR });
     }
     if (busy)
       return send(429, { error: "A decision request is already pending" });

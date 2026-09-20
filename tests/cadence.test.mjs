@@ -24,6 +24,7 @@ function harness({ latencies = [250], borderDelays = [], actions = [] } = {}) {
       read: () => ({
         tick: Math.floor(clock / 100),
         troops: 2500 + Math.floor(clock / 10),
+        troop_capacity: 12000 + Math.floor(clock / 20),
         ready: true,
         ended: false,
       }),
@@ -94,6 +95,10 @@ test("default cadence is request-start to request-start; slow calls never overla
   assert.deepEqual(
     h.calls.map((c) => c.state.troops),
     [2500, 2600, 2700, 2840, 2940],
+  );
+  assert.deepEqual(
+    h.calls.map((c) => c.state.troop_capacity),
+    [12000, 12050, 12100, 12170, 12220],
   );
   assert.equal(h.maxActive(), 1);
   assert.equal(h.controller.running, false);

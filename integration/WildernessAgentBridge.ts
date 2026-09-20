@@ -30,6 +30,9 @@ export function attachWildernessAgent(
     return {
       tick: game.ticks(),
       troops: Math.floor((player?.troops() ?? 0) / 10),
+      troop_capacity: player
+        ? Math.floor(game.config().maxTroops(player) / 10)
+        : 0,
       ready:
         !disposed &&
         !paused &&

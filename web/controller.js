@@ -5,7 +5,7 @@ const fractions = Object.freeze({
   attack_20: 0.2,
 });
 
-// The adapter owns game access. Only {troops} crosses the model boundary.
+// The adapter owns game access. Only {troops, troop_capacity} reaches Jev.
 export class WildernessController {
   constructor(
     adapter,
@@ -101,19 +101,20 @@ export class WildernessController {
       this.lastTick = state.tick;
       this.abort = new AbortController();
       this.count++;
+      const observation = {
+        troops: state.troops,
+        troop_capacity: state.troop_capacity,
+      };
       this.onUpdate({
         status: "Asking Jev",
-        state: { troops: state.troops },
+        state: observation,
         count: this.count,
       });
       const requestedAt = this.now();
       // Anchor pacing to the actual request, not to the earlier border query.
       this.nextAllowedStart = requestedAt + this.intervalMs;
       wakeAt = this.nextAllowedStart;
-      const decision = await this.decide(
-        { troops: state.troops },
-        this.abort.signal,
-      );
+      const decision = await this.decide(observation, this.abort.signal);
       if (!isCurrent()) return;
       if (!Object.hasOwn(fractions, decision.action))
         throw new Error("Unknown action");
@@ -150,7 +151,7 @@ export class WildernessController {
         status: outcome,
         decision: {
           ...decision,
-          troops: state.troops,
+          ...observation,
           tick: state.tick,
           outcome,
         },

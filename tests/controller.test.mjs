@@ -5,7 +5,13 @@ import { WildernessController } from "../web/controller.js";
 
 function setup({ action = "attack_10", decide, canExpand } = {}) {
   let time = 0;
-  const state = { tick: 100, troops: 2500, ready: true, ended: false };
+  const state = {
+    tick: 100,
+    troops: 2500,
+    troop_capacity: 12000,
+    ready: true,
+    ended: false,
+  };
   const sent = [],
     observed = [],
     events = [],
@@ -56,16 +62,26 @@ for (const [action, expected] of [
   ["attack_10", [0.1]],
   ["attack_20", [0.2]],
 ]) {
-  test(`${action} maps to the bounded action; only troops reach Jev`, async () => {
+  test(`${action} maps to the bounded action; only troops and capacity reach Jev`, async () => {
     const s = setup({ action });
     s.controller.start({ limit: 1 });
     await setImmediate();
-    assert.deepEqual(s.observed, [{ troops: 2500 }]);
+    assert.deepEqual(s.observed, [{ troops: 2500, troop_capacity: 12000 }]);
     assert.deepEqual(s.sent, expected);
     assert.equal(s.controller.running, false);
     assert.equal(s.timers.length, 0);
   });
 }
+
+test("controller executes Jev's choice rather than silently substituting the reserve heuristic", async () => {
+  // This reserve is below the policy's wait threshold, but a valid model
+  // attack choice is still executed: the harness must not fake model adherence.
+  const s = setup({ action: "attack_20" });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.deepEqual(s.sent, [0.2]);
+  assert.equal(s.events.find((e) => e.decision).decision.troop_capacity, 12000);
+});
 
 test("stopping during inference prevents the late response from acting", async () => {
   let resolve, signal;

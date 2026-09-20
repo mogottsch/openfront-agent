@@ -1,6 +1,6 @@
 # Opening reserve strategy: engine-based comparison
 
-2026-09-20. Analysis only: **the deployed Jev prompt and observation have not changed.**
+2026-09-20. These results are deterministic engine-policy comparisons, not Jev runs. The subsequently approved `wilderness-reserve-v2` live prompt adopts the 30% reserve strategy with troop count and capacity as inputs; live model adherence is evaluated separately.
 
 ## Recommendation
 
@@ -22,7 +22,7 @@ A conservative alternative is a **35% target**: its instantaneous growth is abou
 
 > During the initial wilderness-expansion phase, preserve a growing reserve rather than sending troops on every decision. Aim to keep available troops around 30% of current capacity: wait below roughly 31.6%, send 10% between roughly 31.6% and 35.3%, and send 20% above 35.3%. Check once per second and recompute the ratio as land raises capacity. In the tested openings this meant waiting about four seconds initially, then usually sending 10% every two or three seconds. Although the instantaneous growth peak is near 42%, expanding earlier increases future capacity, so staying somewhat below that peak produced a better land/reserve compromise. This rule is for unopposed wilderness expansion, not fighting neighbors.
 
-Implementing a capacity-based policy would require adding **troop capacity** to the current troop-only observation. That change is not part of this analysis.
+The live reserve prompt now receives **troop capacity** alongside available troops. The harness still executes Jev's selected action rather than replacing it with the deterministic reference policy tested here.
 
 ## Data
 
@@ -30,16 +30,16 @@ Implementing a capacity-based policy would require adding **troop capacity** to 
 
 The following are means over the **three real Europe locations only** (France, Poland, Switzerland), rounded to whole tiles/display troops. Remaining troops includes both reserve and troops still committed to the wilderness attack.
 
-| Policy                                           | Land at 30s | Troops left at 30s | Land at 60s | Troops left at 60s |
-| ------------------------------------------------ | ----------: | -----------------: | ----------: | -----------------: |
-| 20% every second (current observed Jev behavior) |       4,978 |              1,133 |       8,339 |              1,053 |
-| 10% every two seconds                            |       5,363 |             11,506 |      18,752 |             22,222 |
-| Target 20% reserve                               |       5,931 |             10,122 |      19,691 |             17,973 |
-| Target 25% reserve                               |       5,240 |             11,931 |      18,988 |             22,293 |
-| **Target 30% reserve**                           |   **4,492** |         **13,182** |  **17,811** |         **25,136** |
-| Target 35% reserve                               |       3,725 |             13,990 |      15,665 |             27,813 |
-| Target 40% reserve                               |       3,141 |             14,346 |      13,607 |             29,434 |
-| Target 42% reserve                               |       2,958 |             14,262 |      12,773 |             29,768 |
+| Policy                                        | Land at 30s | Troops left at 30s | Land at 60s | Troops left at 60s |
+| --------------------------------------------- | ----------: | -----------------: | ----------: | -----------------: |
+| 20% every second (v1's observed Jev behavior) |       4,978 |              1,133 |       8,339 |              1,053 |
+| 10% every two seconds                         |       5,363 |             11,506 |      18,752 |             22,222 |
+| Target 20% reserve                            |       5,931 |             10,122 |      19,691 |             17,973 |
+| Target 25% reserve                            |       5,240 |             11,931 |      18,988 |             22,293 |
+| **Target 30% reserve**                        |   **4,492** |         **13,182** |  **17,811** |         **25,136** |
+| Target 35% reserve                            |       3,725 |             13,990 |      15,665 |             27,813 |
+| Target 40% reserve                            |       3,141 |             14,346 |      13,607 |             29,434 |
+| Target 42% reserve                            |       2,958 |             14,262 |      12,773 |             29,768 |
 
 At 60 seconds the 30% target had about **90% of the land and 40% more remaining troops** than the 20% reserve target, the best land result among the tested configurations averaged over these three starts. Relative to a 42% reserve target, it had about **39% more land and 16% fewer remaining troops**. There is a real tradeoff: the 42% policy did retain the larger army.
 
