@@ -28,9 +28,11 @@ export class WildernessController {
     this.running = false;
     this.generation = 0;
     this.busy = false;
+    // Retained across Stop/Start so a quick restart cannot burst requests.
+    this.nextAllowedStart = 0;
   }
 
-  start({ intervalMs = 2000, limit = 30 } = {}) {
+  start({ intervalMs = 1000, limit = 30 } = {}) {
     if (
       !Number.isFinite(intervalMs) ||
       intervalMs < 1000 ||
@@ -58,16 +60,26 @@ export class WildernessController {
     this.onUpdate({ status, running: false });
   }
 
+  scheduleAt(time) {
+    this.clearTimer(this.timer);
+    this.timer = this.setTimer(
+      () => void this.step(),
+      Math.ceil(Math.max(0, time - this.now())),
+    );
+  }
+
   async step() {
-    if (!this.running) return;
-    if (this.busy) {
-      this.timer = this.setTimer(() => void this.step(), this.intervalMs);
+    // The pending step's finally block also handles a Stop/Start during a request.
+    if (!this.running || this.busy) return;
+    if (this.now() < this.nextAllowedStart) {
+      this.scheduleAt(this.nextAllowedStart);
       return;
     }
     const generation = this.generation;
     const isCurrent = () => this.running && generation === this.generation;
     this.busy = true;
-    const started = this.now();
+    // Idle game-state checks are polled, but are not model requests.
+    let wakeAt = this.now() + this.intervalMs;
     try {
       let state = this.adapter.read();
       if (state.ended) {
@@ -95,6 +107,9 @@ export class WildernessController {
         count: this.count,
       });
       const requestedAt = this.now();
+      // Anchor pacing to the actual request, not to the earlier border query.
+      this.nextAllowedStart = requestedAt + this.intervalMs;
+      wakeAt = this.nextAllowedStart;
       const decision = await this.decide(
         { troops: state.troops },
         this.abort.signal,
@@ -147,11 +162,12 @@ export class WildernessController {
       if (isCurrent()) this.stop(`Stopped: ${error.message}`);
     } finally {
       this.busy = false;
-      if (isCurrent())
-        this.timer = this.setTimer(
-          () => void this.step(),
-          Math.max(0, this.intervalMs - (this.now() - started)),
-        );
+      if (this.running) {
+        // A slow request runs past its deadline: start fresh immediately, with
+        // no queued/catch-up calls. Old runs may schedule, but never act for a
+        // newly started run; the generation checks above reject their answers.
+        this.scheduleAt(isCurrent() ? wakeAt : this.nextAllowedStart);
+      }
     }
   }
 }

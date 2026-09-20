@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   buildRequest,
   parseDecision,
@@ -98,13 +99,9 @@ export function createAgentServer({
         error: "Expected exactly {troops: a finite number between 0 and 1e9}",
       });
     }
-    if (busy || Date.now() - lastCall < minimumIntervalMs)
-      return send(429, {
-        error: "One request at a time; minimum interval is one second",
-      });
+    if (busy)
+      return send(429, { error: "A decision request is already pending" });
     busy = true;
-    lastCall = Date.now();
-    const start = performance.now();
     const request = buildRequest(observation, model);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -113,6 +110,20 @@ export function createAgentServer({
     };
     res.on("close", onClose);
     try {
+      // A browser sending at 1 Hz may arrive a few ms early due to network
+      // jitter. Wait for the deadline instead of failing a valid loop with
+      // 429. Hold the single-flight lock while waiting; never build a queue.
+      while (performance.now() < lastCall + minimumIntervalMs) {
+        await delay(
+          Math.ceil(lastCall + minimumIntervalMs - performance.now()),
+          undefined,
+          { signal: controller.signal },
+        );
+      }
+      controller.signal.throwIfAborted();
+      const start = performance.now();
+      lastCall = start;
+      const requestStartedAt = new Date().toISOString();
       const response = await fetchImpl("https://api.typesafe.ai/v1/systemone", {
         method: "POST",
         headers: {
@@ -129,6 +140,7 @@ export function createAgentServer({
       };
       await log({
         timestamp: new Date().toISOString(),
+        requestStartedAt,
         policy: POLICY_VERSION,
         request,
         decision,

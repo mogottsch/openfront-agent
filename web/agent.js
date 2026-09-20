@@ -21,7 +21,7 @@ export function mount(adapter) {
       <h2>Jev · wilderness experiment</h2>
       <small>Input: own troops only (display units).<br>Actions: wait / 0% / 10% / 20%. Local solo only.</small>
       <div>
-        <label>Interval (s) <input id="interval" aria-label="Decision interval seconds" type="number" min="1" max="30" value="2"></label>
+        <label>Interval (s) <input id="interval" aria-label="Decision interval seconds" type="number" min="1" max="30" value="1"></label>
         <label>Calls <input id="limit" aria-label="Request limit" type="number" min="1" max="300" value="30"></label>
       </div>
       <button id="start">Start Jev</button> <button id="stop" disabled>Stop Jev</button>

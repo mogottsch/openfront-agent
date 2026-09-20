@@ -7,7 +7,7 @@ A deliberately small local-solo experiment: Jev sees **only our available troop 
 - `wait` and `attack_0` are both no-ops: existing attacks and the simulation keep running. These redundant options are retained intentionally for the first experiment; their probabilities may split.
 - `attack_10` / `attack_20` commit that fraction of the **current** available internal troop pool at execution time, via OpenFront's normal `SendAttackIntentEvent(null, troops)`.
 - Jev's selected option is used directly. Confidence and all option probabilities are displayed, not used as an unvalidated threshold.
-- Default cadence: one decision every two seconds, at most 30 requests per Start. Both are adjustable in the panel. Requests never overlap.
+- Default cadence: one request per second, measured **request-start to request-start**, at most 30 requests per Start. Both are adjustable in the panel. Requests never overlap. A slow response delays the next request; missed periods are not queued or caught up.
 
 This is an interface experiment, not a claim of good strategy. One troop count cannot describe capacity, existing commitments, terrain, threats, or recent changes. The model is not secretly given those facts.
 
@@ -55,6 +55,8 @@ Local code checks readiness, pause/catch-up state, whether we're alive, and whet
 - Only 10% and 20% wilderness attack intents can be emitted by the bridge.
 - The simulation is never mutated directly; bots and game rules remain unchanged.
 - An aborted HTTP request may already have consumed API tokens. There are no automatic retries.
+- A fast reply leaves the remainder of the one-second interval idle. A reply taking 1.4 seconds allows the next request immediately afterward, using fresh state. Stop/Start preserves pacing and waits for the prior request to settle.
+- The sidecar also enforces single-flight and at least one second between upstream request starts. Slightly early arrivals wait for the deadline instead of failing due to network jitter; additional concurrent requests are rejected, not queued.
 
 ## Files
 
@@ -67,7 +69,7 @@ Local code checks readiness, pause/catch-up state, whether we're alive, and whet
 | `integration/WildernessAgentBridge.ts` | Reads OpenFront state and emits normal wilderness intents               |
 | `scripts/install-bridge.mjs`           | Installs/removes the integration without replacing game files wholesale |
 
-Requests and model responses are recorded in ignored `logs/decisions-*.jsonl`. These contain the exact prompt, state, resolved model, probabilities, confidence, latency, and token usage. **They record inference, not proof of execution**; the panel shows whether the client sent or discarded a decision. No credentials are logged.
+Requests and model responses are recorded in ignored `logs/decisions-*.jsonl`. These contain the exact prompt, state, resolved model, probabilities, confidence, latency, and token usage. New records also include `requestStartedAt` (upstream request start) alongside `timestamp` (completion); latency excludes any local pacing wait. **They record inference, not proof of execution**; the panel shows whether the client sent or discarded a decision. No credentials are logged.
 
 The installer adds `src/client/WildernessAgentBridge.ts` to OpenFront and a small start/stop hook in `src/client/ClientGameRunner.ts`. It makes no core/simulation changes. Set `OPENFRONT_DIR` if your checkout is elsewhere. Re-run the installer after editing the bridge source.
 
@@ -87,3 +89,5 @@ npx vitest run tests/client/ClientGameRunnerActions.test.ts tests/client/ClientG
 ```
 
 Live smoke test on 2026-09-20: a fresh Europe solo match made three real requests to `jev-1.13.0`, selected `attack_20` three times, emitted three wilderness intents, and visibly expanded territory. Observations were 2700, 2769, and 2886 display troops; API round trips were 606, 246, and 276 ms. The controller stopped at its three-request cap. Confidence was 0.40–0.41, with most probability split between the two nonzero attacks. This verifies wiring, not strategic quality.
+
+One-second cadence smoke test on 2026-09-20: ten real decisions in a fresh Europe solo match. Browser-measured request-start gaps were 1006–1020 ms, with a maximum of one in-flight request and no pending request at completion. Sidecar-recorded upstream starts were 1002–1019 ms apart. API latency was 227–576 ms (324 ms average, 299 ms median). Jev chose 20% for all ten decisions; the panel recorded ten wilderness intents sent and territory visibly expanded. The bot stopped at the ten-request cap. Slow replies, Stop/Start during inference, stale responses, and delayed state preparation are covered separately by virtual-clock tests in `tests/cadence.test.mjs`.

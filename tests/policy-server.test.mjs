@@ -99,7 +99,51 @@ test("HTTP bridge authenticates upstream only and logs the actual request/answer
   assert.deepEqual(JSON.parse(calls[0][1].body).state, { troops: 2500 });
   assert.equal(logs.length, 1);
   assert.ok(!JSON.stringify({ result, logs }).includes("fake-test-secret"));
-  assert.equal((await post(url, { troops: 2500 })).status, 429);
+  assert.ok(Number.isFinite(Date.parse(logs[0].requestStartedAt)));
+});
+
+test("the sidecar paces early arrivals without 429 or overlapping inference", async (t) => {
+  const starts = [];
+  const url = await serve(t, {
+    apiKey: "fake",
+    minimumIntervalMs: 50,
+    fetchImpl: async () => {
+      starts.push(performance.now());
+      return new Response(JSON.stringify(response()));
+    },
+  });
+  for (let i = 0; i < 3; i++) {
+    const reply = await post(url, { troops: 2500 });
+    assert.equal(reply.status, 200);
+    await reply.json();
+  }
+  // A small tolerance covers the measurement inside the mock vs the call site.
+  for (let i = 1; i < starts.length; i++)
+    assert.ok(starts[i] - starts[i - 1] >= 49);
+});
+
+test("the sidecar rejects a second request while inference is outstanding", async (t) => {
+  let resolveInference, entered;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  let calls = 0;
+  const url = await serve(t, {
+    apiKey: "fake",
+    fetchImpl: async () => {
+      calls++;
+      entered();
+      return new Promise((resolve) => {
+        resolveInference = resolve;
+      });
+    },
+  });
+  const first = post(url, { troops: 2500 });
+  await started;
+  assert.equal((await post(url, { troops: 2600 })).status, 429);
+  assert.equal(calls, 1);
+  resolveInference(new Response(JSON.stringify(response())));
+  assert.equal((await first).status, 200);
 });
 
 test("rejects foreign origins, malformed observations, and untrusted hosts before inference", async (t) => {
