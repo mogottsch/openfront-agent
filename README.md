@@ -79,6 +79,10 @@ To remove the integration while preserving other edits:
 node scripts/install-bridge.mjs --remove
 ```
 
+## Opening strategy analysis
+
+[Engine-based opening comparison](docs/opening-analysis.md) compares fixed sends with reserve-target policies using the real growth and combat code. It recommends testing a roughly 30% reserve target as a land/army compromise, rather than assuming the fixed-capacity 42% growth peak is globally optimal. Reproduce the 162-run sweep with `npm run analyze:opening`, or use `npm run analyze:opening -- --smoke` for three short cases. No Jev calls are made, and these analysis policies do **not** change the live troop-only bot.
+
 ## Validation
 
 ```bash
