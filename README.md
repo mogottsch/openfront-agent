@@ -1,94 +1,92 @@
-# OpenFront · Jev wilderness experiment
+# OpenFront · Jev land-action experiment
 
-A deliberately small local-solo experiment: Jev sees **our available troop count and current troop capacity**, and chooses `wait`, `attack_0`, `attack_10`, or `attack_20`.
+A local-solo OpenFront bot using TypeSafe Jev to select bounded land actions. **Current policy: `land-observation-v3`.** It provides a goal (survive and gain territory), field definitions, and action descriptions—**no prescribed reserve target, opening sequence, or tactical strategy**.
 
-- Input: `{ "troops": 3900, "troop_capacity": 12000 }`, both in **display units** (internal values / 10, rounded down). Capacity is computed by OpenFront's real `Config.maxTroops(player)` rule.
-- One TypeSafe Choice question per decision; no history, enemies, map, or ongoing attacks are sent.
-- Policy `wilderness-reserve-v2`: aim for roughly 30% of capacity in reserve. Wait at or below 31.6%, send 10% above 31.6% through 35.3%, and send 20% above 35.3%. These are instructions to Jev, **not a deterministic action override in the harness**.
-- `wait` and `attack_0` are both no-ops: existing attacks and the simulation keep running. These redundant options are retained intentionally for the first experiment; their probabilities may split.
-- `attack_10` / `attack_20` commit that fraction of the **current** available internal troop pool at execution time, via OpenFront's normal `SendAttackIntentEvent(null, troops)`.
-- Jev's selected option is used directly. Confidence and all option probabilities are displayed, not used as an unvalidated threshold.
-- Default cadence: one request per second, measured **request-start to request-start**, at most 30 requests per Start. Both are adjustable in the panel. Requests never overlap. A slow response delays the next request; missed periods are not queued or caught up.
+## What Jev sees and can do
 
-This is an interface and policy-following experiment, not a claim of optimal strategy. The two-field observation still omits existing commitments, terrain, threats, and recent changes. The model is not secretly given those facts. The prompt describes the current decision; cadence, cancellation, and execution belong to the harness.
+The observation describes:
 
-## Current model behavior
+- **Us:** available troops, capacity, territory size, computed reserve percentage and troop density.
+- **Our border:** cardinal edge counts and shares touching wilderness, players, water, or blocked terrain/map boundaries.
+- **Each directly bordering player:** numeric ID, human/nation/tribe type, ally/teammate/unallied relationship, shared border, troops, capacity, territory size, reserve percentage, troop density, troops attacking us, and current attack legality.
+- **Incoming land attacks:** attacker ID, remaining troops, and retreat status, including attackers not currently in the neighbor list.
 
-The reserve-v2 live test changed behavior from constant 20% attacks to **23 waits, five 10% attacks, and two 20% attacks** over 30 decisions. The first attack occurred after about four seconds. However, only **24/30 choices matched the stated reserve ranges**: six times Jev waited where the rule called for 10%. A separate fixed-observation probe also failed at 5,000/12,000 troops. This is not an exact implementation of the numeric rule, and the harness does not conceal that by overriding the model. See [reserve-v2 validation](docs/reserve-v2-validation.md).
+Code computes ratios rather than asking Jev to do arithmetic. Troop counts are in display units (internal troops / 10, rounded down). The game supplies capacity through `Config.maxTroops(player)`.
+
+A single Choice selects among the current legal candidates:
+
+```text
+wait
+attack_wilderness_10
+attack_wilderness_20
+attack_player_71_10
+attack_player_71_20
+...one pair per legal neighboring target
+```
+
+Wilderness options are absent when there is no adjacent claimable wilderness. Allied, teammate, and currently immune/non-attackable players are not attack candidates. Each attack option includes its estimated troop commitment, remaining reserve, and committed-force/defender-troops ratio. **0% is collapsed into wait** rather than duplicated per target.
+
+The model selects the action. The harness does not substitute a heuristic, prefer a target, or impose the earlier 30% reserve strategy. It checks membership in the offered choices, freshness, and real game legality before emitting a normal attack intent. See [the schema, execution contract, and live results](docs/land-v3.md).
 
 ## Run
 
-Requires Node 22+, the sibling `../OpenFrontIO` checkout, and its installed dependencies. This project has no npm dependencies.
-
-Install the small local integration (tested against OpenFront `bb8af015b`):
+Requires Node 22+, the sibling `../OpenFrontIO` checkout and its installed dependencies. This project has no npm dependencies.
 
 ```bash
 cd ~/dev/openfront-agent
 npm run install:bridge
-```
-
-Start the model sidecar in one terminal:
-
-```bash
-cd ~/dev/openfront-agent
 set +x
 source ~/.secrets
 npm start
 ```
 
-The sidecar reads `TYPESAFE_AI_API_KEY`, binds to `127.0.0.1:8788`, and calls `https://api.typesafe.ai/v1/systemone`. The key stays in the Node process, never in browser code or logs. Optionally set `TYPESAFE_MODEL` (default `jev-latest`).
+The sidecar reads `TYPESAFE_AI_API_KEY`, listens on `127.0.0.1:8788`, and calls `https://api.typesafe.ai/v1/systemone`. The key remains server-side and is not logged. Optional `TYPESAFE_MODEL` overrides `jev-latest`.
 
-In another terminal, start the game if it is not already running:
+Start OpenFront in another terminal if needed:
 
 ```bash
 cd ~/dev/OpenFrontIO
 SKIP_BROWSER_OPEN=true npm run dev
 ```
 
-Open **http://localhost:9000/** in Chrome with hardware acceleration enabled. Start a **Solo** match, choose a spawn (or enable Random spawn), then click **Start Jev** in the top-right panel. For an easy smoke test, use Europe / Easy / 10 tribes / 5 nations / Random spawn.
+Open **http://localhost:9000/** in hardware-accelerated Chrome, start a **Solo** match, spawn, and click **Start Jev** in the panel. No model requests happen before Start. The panel exposes the exact model state and candidate descriptions under **Input and available actions**, plus recent decisions and outcomes.
 
-The panel does not make model requests until Start. It is only mounted on a loopback-hosted development build, in singleplayer, outside replays. Private/public multiplayer games are excluded from this first version. If the sidecar was not running when the match started, start it and begin a new match to load the panel.
+- Default: one request per second, measured start-to-start, at most 30 calls per Start. Both are adjustable.
+- At most one in flight. Slow responses delay the next call; missed periods are never queued/caught up.
+- The sidecar independently enforces single-flight and one-second upstream start spacing.
+- Only loopback-hosted development singleplayer is supported. No public/private multiplayer, replays, naval actions, building, diplomacy, or cancelling existing attacks in this version.
+- If the sidecar starts after a match, start a new match to load the panel. After a schema/prompt/bridge update, reinstall the bridge if changed, restart the sidecar, and reload the game page. Older schemas are rejected, not guessed.
 
-## Boundaries and stops
+## Guards and lifecycle
 
-Local code checks readiness, pause/catch-up state, whether we're alive, and whether adjacent claimable wilderness exists. These are execution guards, **not additional Jev inputs**. Border queries use the existing simulation-worker API.
+The game-state adapter reads `GameView`, asks the simulation worker for borders and `PlayerActions.canAttack`, and rechecks the selected target immediately before sending. A disappeared border, new alliance, immunity, pause/death, changed validation tick, or stale observation prevents execution; it does not cause a fallback attack on someone else.
 
-- Waits for spawning/active play; no inference during pause or unchanged ticks.
-- Stops on death/victory, no adjacent wilderness, request limit, or API/validation error.
-- Stops when the tab is hidden; Stop and game teardown abort pending work and prevent late actions.
-- Drops decisions older than two seconds or 20 simulation ticks.
-- Only 10% and 20% wilderness attack intents can be emitted by the bridge.
-- The simulation is never mutated directly; bots and game rules remain unchanged.
-- An aborted HTTP request may already have consumed API tokens. There are no automatic retries.
-- A fast reply leaves the remainder of the one-second interval idle. A reply taking 1.4 seconds allows the next request immediately afterward, using fresh state. Stop/Start preserves pacing and waits for the prior request to settle.
-- The sidecar also enforces single-flight and at least one second between upstream request starts. Slightly early arrivals wait for the deadline instead of failing due to network jitter; additional concurrent requests are rejected, not queued.
+- Troops committed are 10% or 20% of the **current internal troop pool at execution time**. Candidate counts are estimates from the earlier observation.
+- Snapshot age is bounded by two seconds and 20 simulation ticks, including observation preparation time.
+- Spawn/pause/stalled ticks do not spend API calls. If wait is the only option, the harness polls locally until legal attacks become available (e.g. immunity expires).
+- Stops on death/victory, request cap, API/validation error, hidden tab, or explicit Stop. Teardown aborts pending work; late replies cannot act.
+- No automatic API retries. An aborted request may already have consumed tokens.
+- The model response must name an offered action and provide a valid probability distribution over exactly those options.
+- Explicit bounds: 126 neighbors, 256 incoming attacks, and a 64 KiB raw observation. Oversized observations fail rather than silently dropping targets. The neighbor bound keeps the Choice at or below the API's 255-option limit.
 
 ## Files
 
-| File                                   | Responsibility                                                          |
-| -------------------------------------- | ----------------------------------------------------------------------- |
-| `src/policy.mjs`                       | Exact prompt, four options, input/output validation                     |
-| `src/server.mjs`                       | Local HTTP service, credentials, TypeSafe request, JSONL logging        |
-| `web/controller.js`                    | Bounded decision loop, cancellation, freshness, action mapping          |
-| `web/agent.js`                         | In-game Start/Stop panel and recent decisions                           |
-| `integration/WildernessAgentBridge.ts` | Reads OpenFront state and emits normal wilderness intents               |
-| `scripts/install-bridge.mjs`           | Installs/removes the integration without replacing game files wholesale |
+| File                                   | Responsibility                                                                                 |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `web/observation.js`                   | Shared strict schema, computed features, dynamic action candidates                             |
+| `web/game-adapter.js`                  | Border collection, worker legality queries, target-ID mapping and attack execution             |
+| `src/policy.mjs`                       | Minimal goal/semantics prompt and Choice response validation                                   |
+| `src/server.mjs`                       | Local HTTP service, credentials, TypeSafe calls, pacing and JSONL logging                      |
+| `web/controller.js`                    | Single-flight loop, snapshots, lifecycle, freshness and candidate validation                   |
+| `web/agent.js`                         | In-game controls and input/action/decision inspector                                           |
+| `integration/WildernessAgentBridge.ts` | Small dev-only connection to OpenFront; historical filename retained for upgrade compatibility |
+| `scripts/install-bridge.mjs`           | Installs/removes that bridge and the client start/stop hook                                    |
 
-Requests and model responses are recorded in ignored `logs/decisions-*.jsonl`. These contain the exact prompt, state, resolved model, probabilities, confidence, latency, and token usage. New records also include `requestStartedAt` (upstream request start) alongside `timestamp` (completion); latency excludes any local pacing wait. **They record inference, not proof of execution**; the panel shows whether the client sent or discarded a decision. No credentials are logged.
+The installer changes only a client bridge and five hook lines in `../OpenFrontIO/src/client/ClientGameRunner.ts`, not the deterministic core. Track the integration source here; never push to the upstream checkout. Set `OPENFRONT_DIR` for a different checkout. Remove with `node scripts/install-bridge.mjs --remove`.
 
-The installer adds `src/client/WildernessAgentBridge.ts` to OpenFront and a small start/stop hook in `src/client/ClientGameRunner.ts`. It makes no core/simulation changes. Set `OPENFRONT_DIR` if your checkout is elsewhere. Re-run the installer after editing the bridge source. After updating the observation schema or prompt, restart the sidecar and reload the game page before starting a new match; old troop-only clients are rejected rather than silently inventing capacity.
+Ignored `logs/decisions-*.jsonl` records the exact model state, prompt, offered candidates, response probabilities, resolved model, usage, upstream start time and latency. These are **inference records, not execution receipts**. The panel separately distinguishes sent intents from no-ops/discarded decisions; final application still belongs to the game's normal simulation.
 
-To remove the integration while preserving other edits:
-
-```bash
-node scripts/install-bridge.mjs --remove
-```
-
-## Opening strategy analysis
-
-[Engine-based opening comparison](docs/opening-analysis.md) compares fixed sends with reserve-target policies using the real growth and combat code. It motivates the current roughly 30% reserve target as a land/army compromise, rather than assuming the fixed-capacity 42% growth peak is globally optimal. Reproduce the 162-run sweep with `npm run analyze:opening`, or use `npm run analyze:opening -- --smoke` for three short cases. The analysis makes no Jev calls: its deterministic reserve policies are reference baselines, separate from the live bot's model-selected actions.
-
-## Validation
+## Checks and experiments
 
 ```bash
 npm test
@@ -97,8 +95,9 @@ npx tsc --noEmit
 npx vitest run tests/client/ClientGameRunnerActions.test.ts tests/client/ClientGameRunnerMessages.test.ts tests/client/LocalServer.test.ts
 ```
 
-Current reserve policy (`wilderness-reserve-v2`) live test on 2026-09-20: 30 real calls, one in flight at most, browser request-start gaps 1004–1019 ms, seven wilderness intents sent, and visible territorial expansion. API latency averaged 251 ms (196–604 ms). The controller stopped at its 30-request cap. See the model-adherence limitations above; passing harness tests does not establish that Jev follows numeric thresholds correctly.
+The v3 live test included a 30-decision opening and a separate 10-decision continuation after an idle interval. Jev first selected 10% wilderness expansion throughout. In the continuation it waited six times, made one wilderness attack, and selected three 20% attacks on neighboring players. Incoming attacks and changing target availability were present; player attacks were visible in the game. This verifies the expanded integration, not strategic quality. Full conditions and limitations are in [the v3 report](docs/land-v3.md).
 
-Original troop-only policy (`wilderness-v1`) live smoke test on 2026-09-20: a fresh Europe solo match made three real requests to `jev-1.13.0`, selected `attack_20` three times, emitted three wilderness intents, and visibly expanded territory. Observations were 2700, 2769, and 2886 display troops; API round trips were 606, 246, and 276 ms. The controller stopped at its three-request cap. Confidence was 0.40–0.41, with most probability split between the two nonzero attacks. This verifies wiring, not strategic quality.
+Historical work (not instructions used by v3):
 
-Troop-only policy (`wilderness-v1`) one-second cadence smoke test on 2026-09-20: ten real decisions in a fresh Europe solo match. Browser-measured request-start gaps were 1006–1020 ms, with a maximum of one in-flight request and no pending request at completion. Sidecar-recorded upstream starts were 1002–1019 ms apart. API latency was 227–576 ms (324 ms average, 299 ms median). Jev chose 20% for all ten decisions; the panel recorded ten wilderness intents sent and territory visibly expanded. The bot stopped at the ten-request cap. Slow replies, Stop/Start during inference, stale responses, and delayed state preparation are covered separately by virtual-clock tests in `tests/cadence.test.mjs`.
+- [Reserve-v2 prompt and live validation](docs/reserve-v2-validation.md): numeric policy following was imperfect.
+- [Engine-based opening comparison](docs/opening-analysis.md): deterministic reserve-policy baselines, separate from the live model. Reproduce with `npm run analyze:opening` or `npm run analyze:opening -- --smoke`; these make no Jev calls.

@@ -1,6 +1,6 @@
 # Reserve-v2: real model and live game validation
 
-2026-09-20 · `jev-1.13.0` via `jev-latest` · policy `wilderness-reserve-v2`.
+2026-09-20 · `jev-1.13.0` via `jev-latest` · historical policy `wilderness-reserve-v2` (commit `1398be8`). Current [v3](land-v3.md) expands the state/actions and deliberately removes the reserve strategy.
 
 ## What changed
 
@@ -32,7 +32,7 @@ Three real API requests first tested a paragraph with generic action description
 
 The final probe failed with confidence 0.55 (`wait` probability 0.66). This is evidence of unreliable numerical policy following, not a transport error. It does not establish whether division, comparing ranges, or competing prompt semantics is the cause.
 
-To repeat a paid probe with the local sidecar running:
+To repeat a paid probe against the historical v2 checkout (`1398be8`) and its matching bridge/sidecar—not the current v3 schema:
 
 ```bash
 curl http://127.0.0.1:8788/decision \
@@ -71,7 +71,7 @@ A fresh Europe solo match, Easy, 10 tribes, five nations, random spawn. One-seco
 
 The comparison is made against the **queried** state, not the later state when a response executes. Thus these disagreements are not explained by troops regenerating during API latency.
 
-The broad behavior changed in the intended direction: early waiting, smaller expansion sends, and reserves usually near the target after the initial buildup. But the precise numeric policy is not reliably enforced by Jev. The next experiment could supply a reserve percentage calculated in code, removing division from the model's task. That input change has **not** been made in this version.
+The broad behavior changed in the intended direction: early waiting, smaller expansion sends, and reserves usually near the target after the initial buildup. But the precise numeric policy is not reliably enforced by Jev. At this point, a proposed next experiment was to supply a reserve percentage calculated in code. V3 now supplies that derived feature as part of a larger border/neighbor observation, but removes the numeric reserve strategy; it is not a controlled test of whether the ratio alone improves adherence.
 
 ## Evidence and tests
 

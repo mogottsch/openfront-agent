@@ -1,4 +1,5 @@
 // Local experimental bridge owned by ../openfront-agent; not upstream game logic.
+// Filename retained so existing installs can be upgraded in place.
 import { EventBus } from "../core/EventBus";
 import { GameType } from "../core/game/Game";
 import { GameUpdateType } from "../core/game/GameUpdates";
@@ -29,10 +30,6 @@ export function attachWildernessAgent(
         ?.[GameUpdateType.GamePaused]?.some((u) => u.paused) ?? false;
     return {
       tick: game.ticks(),
-      troops: Math.floor((player?.troops() ?? 0) / 10),
-      troop_capacity: player
-        ? Math.floor(game.config().maxTroops(player) / 10)
-        : 0,
       ready:
         !disposed &&
         !paused &&
@@ -46,37 +43,15 @@ export function attachWildernessAgent(
         (!!player?.hasSpawned() && !player.isAlive()),
     };
   };
-  const canExpand = async () => {
-    const player = game.myPlayer();
-    if (!read().ready || !player) return false;
-    const { borderTiles } = await player.borderTiles();
-    if (disposed || !read().ready) return false;
-    for (const border of borderTiles) {
-      if (game.ownerID(border) !== player.smallID()) continue;
-      for (const tile of game.neighbors(border)) {
-        if (
-          game.isLand(tile) &&
-          !game.isImpassable(tile) &&
-          !game.hasOwner(tile)
-        )
-          return true;
-      }
-    }
-    return false;
-  };
-  const attack = (fraction: number) => {
-    if (![0.1, 0.2].includes(fraction) || !read().ready) return false;
-    const troops = Math.floor(game.myPlayer()!.troops() * fraction);
-    if (troops < 1) return false;
-    // null is the normal wilderness target. Never mutate the simulation directly.
-    events.emit(new SendAttackIntentEvent(null, troops));
+  const sendAttack = (targetID: string | null, troops: number) => {
+    if (!read().ready || !Number.isFinite(troops) || troops < 1) return false;
+    events.emit(new SendAttackIntentEvent(targetID, troops));
     return true;
   };
-
   const url = "http://127.0.0.1:8788/agent.js";
   void import(/* @vite-ignore */ url)
     .then((module) => {
-      if (!disposed) cleanup = module.mount({ read, canExpand, attack });
+      if (!disposed) cleanup = module.mount({ game, read, sendAttack });
     })
     .catch(() => {
       if (!disposed)

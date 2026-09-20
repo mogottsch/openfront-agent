@@ -1,12 +1,11 @@
-const fractions = Object.freeze({
-  wait: 0,
-  attack_0: 0,
-  attack_10: 0.1,
-  attack_20: 0.2,
-});
+import {
+  actionCriteria,
+  buildActions,
+  modelState,
+  validateObservation,
+} from "./observation.js";
 
-// The adapter owns game access. Only {troops, troop_capacity} reaches Jev.
-export class WildernessController {
+export class LandController {
   constructor(
     adapter,
     {
@@ -28,7 +27,6 @@ export class WildernessController {
     this.running = false;
     this.generation = 0;
     this.busy = false;
-    // Retained across Stop/Start so a quick restart cannot burst requests.
     this.nextAllowedStart = 0;
   }
 
@@ -68,8 +66,19 @@ export class WildernessController {
     );
   }
 
+  fresh(tick, observedAt) {
+    const current = this.adapter.read();
+    return (
+      current.ready &&
+      !current.ended &&
+      Number.isInteger(tick) &&
+      current.tick >= tick &&
+      current.tick - tick <= 20 &&
+      this.now() - observedAt <= 2000
+    );
+  }
+
   async step() {
-    // The pending step's finally block also handles a Stop/Start during a request.
     if (!this.running || this.busy) return;
     if (this.now() < this.nextAllowedStart) {
       this.scheduleAt(this.nextAllowedStart);
@@ -78,84 +87,74 @@ export class WildernessController {
     const generation = this.generation;
     const isCurrent = () => this.running && generation === this.generation;
     this.busy = true;
-    // Idle game-state checks are polled, but are not model requests.
     let wakeAt = this.now() + this.intervalMs;
     try {
-      let state = this.adapter.read();
-      if (state.ended) {
+      const current = this.adapter.read();
+      if (current.ended) {
         this.stop("Game ended");
         return;
       }
-      if (!state.ready || state.tick === this.lastTick) {
+      if (!current.ready || current.tick === this.lastTick) {
         this.onUpdate({ status: "Waiting for active play / advancing ticks" });
         return;
       }
-      if (!(await this.adapter.canExpand())) {
-        if (isCurrent())
-          this.stop("No adjacent wilderness — opening experiment finished");
+      const observedAt = this.now();
+      const snapshot = await this.adapter.observe();
+      if (!isCurrent()) return;
+      if (!this.fresh(snapshot.tick, observedAt)) {
+        this.onUpdate({ status: "Discarded stale observation" });
         return;
       }
-      if (!isCurrent()) return;
-      state = this.adapter.read();
-      if (!state.ready || state.ended) return;
-      this.lastTick = state.tick;
+      const observation = validateObservation(snapshot.observation);
+      const actions = buildActions(observation);
+      const state = modelState(observation);
+      this.onUpdate({ state, actions: actionCriteria(actions) });
+      if (Object.keys(actions).length === 1) {
+        // Keep polling: an immunity period may end or borders may change.
+        // No paid request is needed when wait is the only available option.
+        this.onUpdate({ status: "Waiting for legal land attacks" });
+        return;
+      }
+      this.lastTick = snapshot.tick;
       this.abort = new AbortController();
       this.count++;
-      const observation = {
-        troops: state.troops,
-        troop_capacity: state.troop_capacity,
-      };
-      this.onUpdate({
-        status: "Asking Jev",
-        state: observation,
-        count: this.count,
-      });
+      this.onUpdate({ status: "Asking Jev", count: this.count });
       const requestedAt = this.now();
-      // Anchor pacing to the actual request, not to the earlier border query.
       this.nextAllowedStart = requestedAt + this.intervalMs;
       wakeAt = this.nextAllowedStart;
       const decision = await this.decide(observation, this.abort.signal);
       if (!isCurrent()) return;
-      if (!Object.hasOwn(fractions, decision.action))
-        throw new Error("Unknown action");
-      const latest = this.adapter.read();
+      if (!Object.hasOwn(actions, decision.action))
+        throw new Error(
+          "Model selected an action outside this observation's candidates",
+        );
+      const action = actions[decision.action];
       let outcome = "no-op";
-      if (
-        !latest.ready ||
-        latest.ended ||
-        latest.tick < state.tick ||
-        latest.tick - state.tick > 20 ||
-        this.now() - requestedAt > 2000
-      ) {
+      if (!this.fresh(snapshot.tick, observedAt)) {
         outcome =
-          "discarded: state unavailable or response older than 2 seconds";
-      } else if (fractions[decision.action] > 0) {
-        if (await this.adapter.canExpand()) {
-          const checked = this.adapter.read();
-          if (!isCurrent()) return;
-          if (
-            checked.ready &&
-            !checked.ended &&
-            checked.tick >= state.tick &&
-            checked.tick - state.tick <= 20 &&
-            this.now() - requestedAt <= 2000
-          ) {
-            outcome = this.adapter.attack(fractions[decision.action])
-              ? "wilderness intent sent"
-              : "not sent";
-          } else outcome = "discarded: state changed";
-        } else outcome = "not sent: no adjacent wilderness";
+          "discarded: state unavailable or observation older than 2 seconds";
+      } else if (action.kind === "attack") {
+        const legal = await this.adapter.canExecute(action);
+        if (!isCurrent()) return;
+        if (!this.fresh(snapshot.tick, observedAt))
+          outcome = "discarded: state changed";
+        else if (!legal) outcome = "discarded: target no longer legal";
+        else
+          outcome = this.adapter.execute(action)
+            ? "land attack intent sent"
+            : "not sent";
       }
       if (!isCurrent()) return;
       this.onUpdate({
         status: outcome,
+        count: this.count,
         decision: {
           ...decision,
-          ...observation,
-          tick: state.tick,
+          observation: state,
+          selected: action,
+          tick: snapshot.tick,
           outcome,
         },
-        count: this.count,
       });
       if (this.count >= this.limit)
         this.stop(`Request limit reached (${this.limit})`);
@@ -163,12 +162,10 @@ export class WildernessController {
       if (isCurrent()) this.stop(`Stopped: ${error.message}`);
     } finally {
       this.busy = false;
-      if (this.running) {
-        // A slow request runs past its deadline: start fresh immediately, with
-        // no queued/catch-up calls. Old runs may schedule, but never act for a
-        // newly started run; the generation checks above reject their answers.
+      // Old runs can wake a restarted run, but generation checks forbid acting
+      // for it. Fast responses idle until the deadline; slow ones never queue.
+      if (this.running)
         this.scheduleAt(isCurrent() ? wakeAt : this.nextAllowedStart);
-      }
     }
   }
 }

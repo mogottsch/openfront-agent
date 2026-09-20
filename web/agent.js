@@ -1,9 +1,11 @@
-import { WildernessController } from "./controller.js";
+import { LandController } from "./controller.js";
+import { createGameAdapter } from "./game-adapter.js";
 
-export function mount(adapter) {
+export function mount(connection) {
+  const adapter = createGameAdapter(connection);
   const panel = document.createElement("aside");
-  panel.id = "jev-wilderness-agent";
-  panel.setAttribute("aria-label", "Jev wilderness agent");
+  panel.id = "jev-land-agent";
+  panel.setAttribute("aria-label", "Jev land agent");
   // Shadow DOM keeps the experimental panel independent of upstream styling/i18n.
   const root = panel.attachShadow({ mode: "open" });
   root.innerHTML = `
@@ -18,8 +20,8 @@ export function mount(adapter) {
       ol { max-height:190px; overflow:auto; padding-left:22px; font-size:12px; } li { padding:4px 0; border-bottom:1px solid #ffffff18; white-space:pre-wrap; overflow-wrap:anywhere; }
     </style>
     <section>
-      <h2>Jev · wilderness experiment</h2>
-      <small>Input: own troops + capacity (display units).<br>Target: 30% reserve. Actions: wait / 0% / 10% / 20%.<br>Local solo only.</small>
+      <h2>Jev · land actions</h2>
+      <small>Borders, neighbors, incoming attacks.<br>Wait or attack a legal target with 10% / 20%.<br>No prescribed strategy. Local solo only.</small>
       <div>
         <label>Interval (s) <input id="interval" aria-label="Decision interval seconds" type="number" min="1" max="30" value="1"></label>
         <label>Calls <input id="limit" aria-label="Request limit" type="number" min="1" max="300" value="30"></label>
@@ -27,12 +29,13 @@ export function mount(adapter) {
       <button id="start">Start Jev</button> <button id="stop" disabled>Stop Jev</button>
       <p id="status" role="status">Stopped — no API calls until Start.</p>
       <pre id="state">Awaiting first observation</pre>
+      <details><summary>Input and available actions</summary><pre id="payload" style="max-height:240px;overflow:auto;overflow-wrap:anywhere"></pre></details>
       <p id="count">Requests: 0</p>
       <details><summary>Decisions and probabilities</summary><ol id="history"></ol></details>
     </section>`;
   const $ = (id) => root.getElementById(id);
   let disposed = false;
-  const controller = new WildernessController(adapter, {
+  const controller = new LandController(adapter, {
     async decide(state, signal) {
       const response = await fetch(new URL("/decision", import.meta.url), {
         method: "POST",
@@ -54,14 +57,23 @@ export function mount(adapter) {
         $("interval").disabled = event.running;
         $("limit").disabled = event.running;
       }
-      if (event.state) $("state").textContent = JSON.stringify(event.state);
+      if (event.state) {
+        const { self, border, neighbors } = event.state;
+        $("state").textContent =
+          `Troops ${self.troops}/${self.troop_capacity} (${self.reserve_percent}%)\nBorder: ${Math.round(border.wilderness_share * 100)}% wilderness, ${Math.round(border.player_share * 100)}% players\nNeighbors: ${neighbors.length} · incoming troops: ${self.active_incoming_troops}`;
+        $("payload").textContent = JSON.stringify(
+          { state: event.state, actions: event.actions },
+          null,
+          2,
+        );
+      }
       if (event.count !== undefined)
         $("count").textContent = `Requests: ${event.count}`;
       if (event.decision) {
         const d = event.decision;
         const item = document.createElement("li");
-        const reservePercent = ((100 * d.troops) / d.troop_capacity).toFixed(1);
-        item.textContent = `${d.action} · troops ${d.troops}/${d.troop_capacity} (${reservePercent}%) · ${d.latencyMs}ms · confidence ${d.confidence}\n${d.outcome}\n${JSON.stringify(d.probabilities)}`;
+        const self = d.observation.self;
+        item.textContent = `${d.action} · troops ${self.troops}/${self.troop_capacity} (${self.reserve_percent}%) · ${d.latencyMs}ms · confidence ${d.confidence}\n${d.outcome}\n${JSON.stringify(d.probabilities)}`;
         $("history").prepend(item);
         while ($("history").children.length > 30)
           $("history").lastChild.remove();

@@ -13,6 +13,8 @@ import {
 const publicFiles = new Map([
   ["/agent.js", new URL("../web/agent.js", import.meta.url)],
   ["/controller.js", new URL("../web/controller.js", import.meta.url)],
+  ["/observation.js", new URL("../web/observation.js", import.meta.url)],
+  ["/game-adapter.js", new URL("../web/game-adapter.js", import.meta.url)],
 ]);
 
 export function createAgentServer({
@@ -89,7 +91,7 @@ export function createAgentServer({
       let length = 0;
       for await (const chunk of req) {
         length += chunk.length;
-        if (length > 4096) return send(413, { error: "Request too large" });
+        if (length > 65536) return send(413, { error: "Request too large" });
         chunks.push(chunk);
       }
       observation = validateObservation(
@@ -134,7 +136,10 @@ export function createAgentServer({
       });
       if (!response.ok) throw new Error(`TypeSafe HTTP ${response.status}`);
       const decision = {
-        ...parseDecision(await response.json()),
+        ...parseDecision(
+          await response.json(),
+          request.questions.action.criteria,
+        ),
         latencyMs: Math.round(performance.now() - start),
       };
       await log({

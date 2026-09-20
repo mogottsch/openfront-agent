@@ -4,7 +4,8 @@
 - Keep commits focused. Do not force-push or publish failing/untested changes as verified work.
 - This is a public repository. Never commit API keys, secret files, `.env` files, or generated run logs. Keep TypeSafe credentials in the local Node service, not browser code.
 - Track OpenFront integration source in `integration/` and installation logic in `scripts/`. `../OpenFrontIO` is a separate upstream checkout; do not push there. Update the integration source here, then use `npm run install:bridge` to deploy it locally.
-- Do not expand the bot's observation or action scope without discussing the change with Moritz. The current approved experiment uses own troop count plus current troop capacity, with wait / 0% / 10% / 20% wilderness actions. The prompt targets a 30% reserve; the harness must not silently substitute a deterministic policy for Jev's answer.
+- Do not expand the bot's observation or action scope without discussing the change with Moritz. Current approved input: own troops/capacity/territory, border contacts, neighboring players' strength/relationship/legality, incoming attacks, and precomputed ratios. Actions: wait or a 10%/20% land attack on wilderness or a legal bordering player. No boats, buildings, diplomacy, or attack cancellation yet.
+- Moritz explicitly wants to observe Jev without a prescribed strategy before deriving the next strategy together. The v3 prompt contains only the goal and data/action semantics; do not restore the old 30% reserve rule or silently replace model choices with heuristics. Cadence (one second, single-flight) and legal execution belong to the harness.
 
 ## Checks
 

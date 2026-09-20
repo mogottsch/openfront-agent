@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
-import { WildernessController } from "../web/controller.js";
+import { LandController } from "../web/controller.js";
+import { observation } from "./fixtures/land.mjs";
 
 // Virtual time, including request/border-query completion: no real inference.
 function harness({ latencies = [250], borderDelays = [], actions = [] } = {}) {
@@ -19,22 +20,27 @@ function harness({ latencies = [250], borderDelays = [], actions = [] } = {}) {
     return id;
   };
   const delay = (ms) => new Promise((resolve) => setTimer(resolve, ms));
-  const controller = new WildernessController(
+  const controller = new LandController(
     {
       read: () => ({
         tick: Math.floor(clock / 100),
-        troops: 2500 + Math.floor(clock / 10),
-        troop_capacity: 12000 + Math.floor(clock / 20),
         ready: true,
         ended: false,
       }),
-      canExpand: async () => {
+      observe: async () => {
         const ms = borderDelays[borderIndex++] ?? 0;
         if (ms) await delay(ms);
-        return true;
+        return {
+          tick: Math.floor(clock / 100),
+          observation: observation(
+            2500 + Math.floor(clock / 10),
+            12000 + Math.floor(clock / 20),
+          ),
+        };
       },
-      attack: (fraction) => {
-        attacks.push(fraction);
+      canExecute: async () => true,
+      execute: (action) => {
+        attacks.push(action.fraction);
         return true;
       },
     },
@@ -93,11 +99,11 @@ test("default cadence is request-start to request-start; slow calls never overla
     [0, 1000, 2000, 3400, 4400],
   );
   assert.deepEqual(
-    h.calls.map((c) => c.state.troops),
+    h.calls.map((c) => c.state.self.troops),
     [2500, 2600, 2700, 2840, 2940],
   );
   assert.deepEqual(
-    h.calls.map((c) => c.state.troop_capacity),
+    h.calls.map((c) => c.state.self.troop_capacity),
     [12000, 12050, 12100, 12170, 12220],
   );
   assert.equal(h.maxActive(), 1);
@@ -141,7 +147,10 @@ test("a quick Stop/Start preserves the previous request's one-second deadline", 
 });
 
 test("restarting with an outstanding request waits for it and discards its late action", async () => {
-  const h = harness({ latencies: [1400, 250], actions: ["attack_20", "wait"] });
+  const h = harness({
+    latencies: [1400, 250],
+    actions: ["attack_wilderness_20", "wait"],
+  });
   h.controller.start();
   await h.advanceTo(200);
   h.controller.stop();
@@ -157,7 +166,10 @@ test("restarting with an outstanding request waits for it and discards its late 
 });
 
 test("a request exceeding the freshness limit is discarded and does not queue missed periods", async () => {
-  const h = harness({ latencies: [2500, 250, 250], actions: ["attack_20"] });
+  const h = harness({
+    latencies: [2500, 250, 250],
+    actions: ["attack_wilderness_20"],
+  });
   h.controller.start({ limit: 3 });
   await h.advanceTo(4000);
   assert.deepEqual(

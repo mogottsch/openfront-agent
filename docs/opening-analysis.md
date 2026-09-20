@@ -1,6 +1,6 @@
 # Opening reserve strategy: engine-based comparison
 
-2026-09-20. These results are deterministic engine-policy comparisons, not Jev runs. The subsequently approved `wilderness-reserve-v2` live prompt adopts the 30% reserve strategy with troop count and capacity as inputs; live model adherence is evaluated separately.
+2026-09-20. These results are deterministic engine-policy comparisons, not Jev runs. The later `wilderness-reserve-v2` prompt adopted the 30% reserve strategy; its live adherence was evaluated separately. Current v3 deliberately removes prescribed strategy while expanding observations and actions. These historical benchmark results are not rules used by v3.
 
 ## Recommendation
 
@@ -22,7 +22,7 @@ A conservative alternative is a **35% target**: its instantaneous growth is abou
 
 > During the initial wilderness-expansion phase, preserve a growing reserve rather than sending troops on every decision. Aim to keep available troops around 30% of current capacity: wait below roughly 31.6%, send 10% between roughly 31.6% and 35.3%, and send 20% above 35.3%. Check once per second and recompute the ratio as land raises capacity. In the tested openings this meant waiting about four seconds initially, then usually sending 10% every two or three seconds. Although the instantaneous growth peak is near 42%, expanding earlier increases future capacity, so staying somewhat below that peak produced a better land/reserve compromise. This rule is for unopposed wilderness expansion, not fighting neighbors.
 
-The live reserve prompt now receives **troop capacity** alongside available troops. The harness still executes Jev's selected action rather than replacing it with the deterministic reference policy tested here.
+Historical v2 added **troop capacity** alongside available troops. V3 keeps capacity and adds border/neighbor facts, but removes the reserve instructions. The live harness executes Jev's selected action rather than replacing it with the deterministic reference policy tested here.
 
 ## Data
 

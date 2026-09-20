@@ -4,13 +4,15 @@ import { get } from "node:http";
 import {
   buildRequest,
   parseDecision,
-  ACTIONS,
   validateObservation,
   POLICY_VERSION,
 } from "../src/policy.mjs";
 import { createAgentServer } from "../src/server.mjs";
+import { modelState } from "../web/observation.js";
+import { observation } from "./fixtures/land.mjs";
+const criteria = buildRequest(observation()).questions.action.criteria;
 
-const response = (action = "attack_10") => ({
+const response = (action = "attack_wilderness_10") => ({
   model: "jev-test",
   usage: { input_tokens: 100, output_tokens: 20 },
   answers: {
@@ -19,38 +21,38 @@ const response = (action = "attack_10") => ({
       choice: action,
       confidence: 0.8,
       probabilities: Object.fromEntries(
-        Object.keys(ACTIONS).map((key) => [key, key === action ? 1 : 0]),
+        Object.keys(criteria).map((key) => [key, key === action ? 1 : 0]),
       ),
     },
   },
 });
 
-const observation = (troops = 2500, troop_capacity = 12000) => ({
-  troops,
-  troop_capacity,
-});
-
-test("request exposes only troops and capacity with the four specified choices", () => {
+test("request includes border/neighbor facts and exactly the legal target-size options", () => {
   const request = buildRequest(observation());
-  assert.deepEqual(request.state, { troops: 2500, troop_capacity: 12000 });
+  assert.deepEqual(request.state, modelState(observation()));
   assert.deepEqual(Object.keys(request.questions), ["action"]);
   assert.deepEqual(Object.keys(request.questions.action.criteria), [
     "wait",
-    "attack_0",
-    "attack_10",
-    "attack_20",
+    "attack_wilderness_10",
+    "attack_wilderness_20",
+    "attack_player_2_10",
+    "attack_player_2_20",
   ]);
+  assert.equal(
+    request.questions.action.criteria.attack_player_2_20
+      .committed_to_defender_ratio,
+    0.5,
+  );
 });
 
-test("reserve prompt encodes the agreed strategy, not harness timing", () => {
-  const instructions =
-    buildRequest(observation()).questions.action.instructions.join(" ");
-  assert.match(instructions, /30%/);
-  assert.match(instructions, /31\.6%/);
-  assert.match(instructions, /35\.3%/);
-  assert.match(instructions, /100 \* troops \/ troop_capacity/);
-  assert.doesNotMatch(instructions, /second|interval|poll|latency|timer/i);
-  assert.equal(POLICY_VERSION, "wilderness-reserve-v2");
+test("prompt supplies only a goal and field/action semantics, not a tactical policy or cadence", () => {
+  const question = buildRequest(observation()).questions.action;
+  assert.match(question.instructions.join(" "), /survive and gain territory/);
+  assert.doesNotMatch(
+    JSON.stringify(question),
+    /30%|31\.6|35\.3|growth peak|reserve target|prefer wilderness|second|interval|poll|latency|timer/i,
+  );
+  assert.equal(POLICY_VERSION, "land-observation-v3");
 });
 
 test("accepts zero troops and reserves temporarily above capacity", () => {
@@ -81,11 +83,18 @@ test("rejects missing capacity, extra state, invalid counts, and unsupported act
   ]) {
     assert.throws(() => validateObservation(value));
   }
-  assert.throws(() => parseDecision(response("attack_100")));
+  for (const action of [
+    "attack_100",
+    "attack_player_3_10",
+    "attack_player_99_20",
+    "attack_0",
+  ]) {
+    assert.throws(() => parseDecision(response(action), criteria));
+  }
   const bad = response();
-  bad.answers.action.probabilities.attack_10 = 2;
-  assert.throws(() => parseDecision(bad));
-  assert.equal(parseDecision(response("attack_0")).action, "attack_0");
+  bad.answers.action.probabilities.attack_wilderness_10 = 2;
+  assert.throws(() => parseDecision(bad, criteria));
+  assert.equal(parseDecision(response("wait"), criteria).action, "wait");
 });
 
 async function serve(t, options) {
@@ -125,10 +134,13 @@ test("HTTP bridge authenticates upstream only and logs the actual request/answer
     "http://localhost:9000",
   );
   const result = await reply.json();
-  assert.equal(result.action, "attack_10");
+  assert.equal(result.action, "attack_wilderness_10");
   assert.equal(calls[0][0], "https://api.typesafe.ai/v1/systemone");
   assert.equal(calls[0][1].headers.Authorization, "Bearer fake-test-secret");
-  assert.deepEqual(JSON.parse(calls[0][1].body).state, observation());
+  assert.deepEqual(
+    JSON.parse(calls[0][1].body).state,
+    modelState(observation()),
+  );
   assert.equal(logs.length, 1);
   assert.ok(!JSON.stringify({ result, logs }).includes("fake-test-secret"));
   assert.ok(Number.isFinite(Date.parse(logs[0].requestStartedAt)));
@@ -218,5 +230,12 @@ test("upstream errors are bounded and contain no upstream body or key", async (t
 test("missing key does not make a model request", async (t) => {
   const url = await serve(t, {});
   assert.equal((await post(url, observation(100))).status, 503);
-  assert.equal((await fetch(url + "/agent.js")).status, 200);
+  for (const path of [
+    "/agent.js",
+    "/controller.js",
+    "/observation.js",
+    "/game-adapter.js",
+  ]) {
+    assert.equal((await fetch(url + path)).status, 200);
+  }
 });
