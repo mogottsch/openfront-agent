@@ -1,0 +1,13 @@
+{
+  "name": "openfront-agent",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "install:bridge": "node scripts/install-bridge.mjs"
+  }
+}
