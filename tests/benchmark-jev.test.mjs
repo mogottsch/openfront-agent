@@ -10,6 +10,7 @@ import {
   observeCore,
   recheckCoreAction,
   startBenchmarkSession,
+  timedWinCheckBoundary,
 } from "../scripts/benchmark-jev-observation.mjs";
 
 function fixture() {
@@ -306,6 +307,14 @@ test("Start refuses invalid caps; failed Stop blocks decisions but allows revoke
   assert.throws(session.headers, /already stopped/);
   await session.stop();
   assert.equal(deletes, 2);
+});
+
+test("only configured timer boundary may advance engine without a model decision", () => {
+  assert.equal(timedWinCheckBoundary(299.9, 5), false);
+  assert.equal(timedWinCheckBoundary(300, 5), true);
+  assert.equal(timedWinCheckBoundary(301, 5), true);
+  assert.throws(() => timedWinCheckBoundary(302.1, 5), /WinCheck did not fire/);
+  assert.throws(() => timedWinCheckBoundary(300, 0), /Invalid engine timer/);
 });
 
 test("sidecar failure does not invent a wait or attack", async () => {

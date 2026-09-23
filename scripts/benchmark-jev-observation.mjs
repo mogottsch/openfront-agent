@@ -95,6 +95,19 @@ export function recheckCoreAction(game, me, snapshot, choiceId) {
   return action;
 }
 
+// The native timed FFA winner is checked on an engine tick, not exactly at
+// the first decision boundary at the configured minute. Only advance empty
+// turns in this narrow window; this is neither a model wait nor a fallback.
+export function timedWinCheckBoundary(elapsedSeconds, timerMinutes) {
+  if (!Number.isFinite(elapsedSeconds) ||
+      !Number.isInteger(timerMinutes) || timerMinutes < 1 || timerMinutes > 120)
+    throw new Error("Invalid engine timer boundary");
+  const past = elapsedSeconds - timerMinutes * 60;
+  if (past < 0) return false;
+  if (past > 2) throw new Error("Engine timed WinCheck did not fire within two game seconds");
+  return true;
+}
+
 // Tick starts never exceed the 10Hz simulation rate. Base each new deadline
 // on the *actual* start, not the previous deadline: a slow model cannot cause
 // catch-up ticks. Timers may wake slightly early, so loop until the deadline.

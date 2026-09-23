@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { timedWinCheckBoundary } from "./benchmark-jev-observation.mjs";
 
 const root = resolve(process.env.OPENFRONT_DIR || "../OpenFrontIO");
 const load = (path: string) => import(pathToFileURL(resolve(root, path)).href);
@@ -235,7 +236,13 @@ export async function runBenchmarkMatch(
     const intents: any[] = [];
     if (human.isAlive() && !game.inSpawnPhase() && second !== lastDecisionSecond) {
       lastDecisionSecond = second;
-      if (policy === "jev-v4.1") {
+      if (policy === "jev-v4.1" && timedWinCheckBoundary(game.elapsedGameSeconds(), opts.minutes)) {
+        // Engine WinCheck runs on its own tick cadence. At the configured
+        // timer, advance empty turns until its actual Win event. Do not spend
+        // a 301st call or fabricate a model-selected wait/attack.
+        decisions.push({ second, call: "engine-timer-boundary",
+          selectedId: null, decision: null, intent: null });
+      } else if (policy === "jev-v4.1") {
         if (!hooks.decide || !hooks.paceTick) throw new Error("Jev benchmark requires a decision hook and paced ticks");
         const selected = await hooks.decide({ game, human, second });
         if (selected.stop) {
