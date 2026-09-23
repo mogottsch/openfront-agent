@@ -21,7 +21,9 @@ test('initializes an empty, auto-refreshing local HTML page without calling Pi',
   const { state } = await fixture('throw new Error("must not launch")');
   const path = execFileSync(process.execPath, [script, '--init'], { env: { ...process.env, A_CHECKIN_STATE_DIR: state }, encoding: 'utf8' }).trim();
   assert.equal(path, join(state, 'index.html'));
-  assert.match(await readFile(path, 'utf8'), /refresh" content="15"/);
+  const page = await readFile(path, 'utf8');
+  assert.match(page, /refresh" content="15"/);
+  assert.match(page, /<h1>A · progress<\/h1>/);
   assert.deepEqual(JSON.parse(await readFile(join(state, 'history.json'), 'utf8')), []);
 });
 
@@ -36,12 +38,15 @@ test('records bounded Pi summary, escapes HTML, and selects a dedicated Luna ses
   const page = await readFile(join(state, 'index.html'), 'utf8');
   assert.match(page, /&lt;blocked&gt; &amp; working/);
   assert.doesNotMatch(page, /<blocked>/);
+  assert.match(page, /<time datetime="\d{4}-\d{2}-\d{2}T/);
   const args = JSON.parse(await readFile(join(state, 'args.json'), 'utf8'));
   assert.deepEqual(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2), ['--model', 'github-copilot/gpt-6-luna']);
   assert.equal(args[args.indexOf('--session-dir') + 1], join(state, 'sessions'));
   assert.ok(args.includes('--session-id'));
   assert.ok(args.includes('-p'));
-  assert.match(args.at(-1), /ask A for a SHORT status/);
+  assert.match(args.at(-1), /what moved forward since the last check-in/);
+  assert.match(args.at(-1), /Avoid commit hashes, file names, test counts/);
+  assert.match(args.at(-1), /If nothing new happened or A did not reply, say that plainly/);
   assert.ok(!args.includes('--no-session'));
   assert.ok(!result.stdout.includes('API_KEY'));
   assert.equal(root.startsWith(repo), false);
