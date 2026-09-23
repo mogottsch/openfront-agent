@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { tmpdir } from 'node:os';
+import { CopilotClient, CopilotSession } from '@github/copilot-sdk';
 import { createCopilotPlanner, validatePlan } from '../src/copilot-planner.mjs';
 
 const snapshot = () => ({
@@ -34,6 +39,31 @@ function harness({ reply = answer(), now = () => 1100 } = {}) {
   const plan = createCopilotPlanner({ createClient, model: 'test-model', now });
   return { calls, plan, getCurrentState: () => current, setCurrent(value) { current = value; } };
 }
+
+test('pinned official SDK exposes a local runtime and structured-output session API without starting it', () => {
+  const app = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const installed = JSON.parse(readFileSync(new URL('../node_modules/@github/copilot-sdk/package.json', import.meta.url), 'utf8'));
+  assert.equal(app.dependencies['@github/copilot-sdk'], '1.0.15-preview.1');
+  assert.equal(installed.version, '1.0.15-preview.1');
+  const client = new CopilotClient({ mode: 'empty', baseDirectory: join(tmpdir(), 'openfront-copilot-test') });
+  assert.equal(typeof client.start, 'function');
+  assert.equal(typeof CopilotSession.prototype.sendAndWait, 'function');
+  if (process.platform === 'linux' && process.arch === 'x64') {
+    const runtime = readFileSync(new URL('../node_modules/@github/copilot-sdk-linux-x64/prebuilds/linux-x64/copilot-runtime', import.meta.url));
+    assert.ok(runtime.byteLength > 0);
+  }
+  // Constructing the client and inspecting package artifacts makes no request.
+});
+
+test('single-probe harness is inert by default and refuses partial authorization', () => {
+  const path = new URL('../scripts/probe-copilot-plan.mjs', import.meta.url).pathname;
+  const dry = spawnSync(process.execPath, [path], { encoding: 'utf8' });
+  assert.equal(dry.status, 0);
+  assert.match(dry.stdout, /DRY RUN/);
+  const refused = spawnSync(process.execPath, [path, '--run'], { encoding: 'utf8' });
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /explicit Moritz approval/);
+});
 
 test('no Copilot activity until explicitly invoked; zero tools and strict structured output', async () => {
   const h = harness();

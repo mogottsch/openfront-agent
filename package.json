@@ -11,5 +11,8 @@
     "install:bridge": "node scripts/install-bridge.mjs",
     "analyze:opening": "../OpenFrontIO/node_modules/.bin/tsx --tsconfig ../OpenFrontIO/tsconfig.json scripts/analyze-opening.mts",
     "analyze:combat": "../OpenFrontIO/node_modules/.bin/tsx --tsconfig ../OpenFrontIO/tsconfig.json scripts/analyze-combat.mts"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "1.0.15-preview.1"
   }
 }

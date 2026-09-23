@@ -2,6 +2,8 @@
 // until plan() is explicitly invoked by a future, separately approved controller.
 // Official SDK: https://github.com/github/copilot-sdk/tree/main/nodejs
 // Backend isolation: https://github.com/github/copilot-sdk/blob/main/docs/setup/multi-tenancy.md
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const REPLAN_EVENTS = ['border_change', 'incoming_attack', 'structure_change', 'economy_change'];
 const PRIORITIES = ['high', 'medium', 'low'];
@@ -10,21 +12,24 @@ const keysAre = (value, keys) => value !== null && typeof value === 'object' && 
 const text = (value, limit) => typeof value === 'string' && value.length > 0 && value.length <= limit && value.trim() === value;
 const integer = (value) => Number.isSafeInteger(value) && value >= 0;
 
+// Provider-compatible JSON Schema subset. Lengths, bounds, uniqueness,
+// references and freshness are enforced by validatePlan below; providers may
+// reject these constraint keywords even when they accept structured output.
 export const PLAN_SCHEMA = Object.freeze({
   type: 'object', additionalProperties: false,
   required: ['schema_version', 'plan_version', 'game_id', 'source_tick', 'expires_tick', 'objective', 'region_priorities', 'replan_on'],
   properties: {
-    schema_version: { const: 1 },
-    plan_version: { type: 'integer', minimum: 1 },
+    schema_version: { type: 'integer', enum: [1] },
+    plan_version: { type: 'integer' },
     game_id: { type: 'string' },
-    source_tick: { type: 'integer', minimum: 0 },
-    expires_tick: { type: 'integer', minimum: 1 },
-    objective: { type: 'string', maxLength: 240 },
-    region_priorities: { type: 'array', maxItems: 16, items: {
+    source_tick: { type: 'integer' },
+    expires_tick: { type: 'integer' },
+    objective: { type: 'string' },
+    region_priorities: { type: 'array', items: {
       type: 'object', additionalProperties: false, required: ['region_id', 'priority', 'reason'],
-      properties: { region_id: { type: 'string' }, priority: { type: 'string', enum: PRIORITIES }, reason: { type: 'string', maxLength: 180 } },
+      properties: { region_id: { type: 'string' }, priority: { type: 'string', enum: PRIORITIES }, reason: { type: 'string' } },
     } },
-    replan_on: { type: 'array', maxItems: REPLAN_EVENTS.length, uniqueItems: true, items: { type: 'string', enum: REPLAN_EVENTS } },
+    replan_on: { type: 'array', items: { type: 'string', enum: REPLAN_EVENTS } },
   },
 });
 
@@ -64,10 +69,14 @@ export function validatePlan(plan, { snapshot, previousVersion, maxPlanTicks }) 
 }
 
 async function defaultClientFactory() {
-  // The official @github/copilot-sdk is intentionally optional until Moritz
-  // approves an integration. Install it on the server before enabling this path.
+  // SDK 1.0.15-preview.1 requires an explicit baseDirectory in "empty" mode.
+  // Store Copilot runtime state outside this public repository. SDK structured
+  // output is still preview; locally validate every plan independently.
   const { CopilotClient } = await import('@github/copilot-sdk');
-  return new CopilotClient({ mode: 'empty', logLevel: 'none' });
+  return new CopilotClient({
+    mode: 'empty', logLevel: 'none',
+    baseDirectory: join(tmpdir(), 'openfront-copilot-planner'),
+  });
 }
 
 /** The caller owns the approved input projection, lifecycle, and scheduling.
