@@ -43,6 +43,7 @@ export function createAgentServer({
     "http://[::1]:9000",
   ],
   minimumIntervalMs = 1000,
+  enableHybridDecisions = false,
 } = {}) {
   let busy = false;
   let lastCall = -Infinity;
@@ -79,6 +80,7 @@ export function createAgentServer({
         model,
         policy: POLICY_VERSION,
         hybridPolicy: HYBRID_POLICY_VERSION,
+        hybridEnabled: enableHybridDecisions,
       });
     }
     if (req.method === "GET" && publicFiles.has(pathname)) {
@@ -96,6 +98,11 @@ export function createAgentServer({
     const hybrid = pathname === "/hybrid-decision";
     if (req.method !== "POST" || (!hybrid && pathname !== "/decision"))
       return send(404, { error: "Not found" });
+    // Opt-in only. This is a feature gate, not a proof that the browser's Start
+    // button was clicked; a separate activation session is required before
+    // presenting this experiment as server-verified Start-gated.
+    if (hybrid && !enableHybridDecisions)
+      return send(403, { error: "Hybrid decision endpoint is disabled" });
     if (!(req.headers["content-type"] ?? "").startsWith("application/json"))
       return send(415, { error: "JSON required" });
     if (!apiKey)
@@ -207,6 +214,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const server = createAgentServer({
       apiKey: process.env.TYPESAFE_AI_API_KEY,
       model: process.env.TYPESAFE_MODEL || "jev-latest",
+      enableHybridDecisions: process.env.OPENFRONT_HYBRID_EXPERIMENT === "1",
       log: (record) => appendFile(logfile, JSON.stringify(record) + "\n"),
     });
     server.listen(8788, "127.0.0.1", () =>

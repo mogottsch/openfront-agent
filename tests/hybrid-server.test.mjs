@@ -109,6 +109,7 @@ test("hybrid Jev endpoint validates three answers, preserves site identity and s
   const url = await serve(t, {
     apiKey: "fake-test-secret",
     minimumIntervalMs: 50,
+    enableHybridDecisions: true,
     fetchImpl: async (_path, init) => {
       const req = JSON.parse(init.body);
       calls.push({ req, start: performance.now() });
@@ -118,6 +119,7 @@ test("hybrid Jev endpoint validates three answers, preserves site identity and s
   });
   const health = await (await fetch(url + "/health")).json();
   assert.equal(health.hybridPolicy, HYBRID_POLICY_VERSION);
+  assert.equal(health.hybridEnabled, true);
   const input = hybridInput();
   const reply = await post(url, "/hybrid-decision", input);
   assert.equal(reply.status, 200);
@@ -147,10 +149,28 @@ test("hybrid Jev endpoint validates three answers, preserves site identity and s
   assert.ok(calls[1].start - calls[0].start >= 48);
 });
 
+test("experimental hybrid endpoint is default-off and cannot make a paid call before opt-in", async (t) => {
+  let calls = 0;
+  const url = await serve(t, {
+    apiKey: "fake",
+    fetchImpl: async () => {
+      calls++;
+      throw new Error("Must not request");
+    },
+  });
+  const health = await (await fetch(url + "/health")).json();
+  assert.equal(health.hybridEnabled, false);
+  const response = await post(url, "/hybrid-decision", hybridInput());
+  assert.equal(response.status, 403);
+  assert.match((await response.json()).error, /disabled/);
+  assert.equal(calls, 0);
+});
+
 test("forged planner objectives and malformed building proposals fail before paid calls", async (t) => {
   let calls = 0;
   const url = await serve(t, {
     apiKey: "fake",
+    enableHybridDecisions: true,
     fetchImpl: async () => {
       calls++;
       throw new Error("Must not request");
