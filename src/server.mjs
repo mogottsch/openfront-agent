@@ -20,6 +20,27 @@ import { createCopilotPlanner } from "./copilot-planner.mjs";
 import { createPlanSession } from "./plan-session.mjs";
 
 const COPILOT_PLAN_PROMPT_VERSION = "copilot-plan-v1";
+const PLAN_REASONS = new Set(["invalid_input", "stale_heartbeat", "sdk_auth_unavailable",
+  "sdk_runtime_or_schema", "timeout", "unknown"]);
+function classifyPlanFailure(error, stage, sdkTurnAttempted) {
+  // Inspect only for classification. Never log, return or interpolate raw SDK
+  // messages: providers may include credentials or request contents in them.
+  const message = typeof error?.message === "string" ? error.message : "";
+  if (/^Stale plan |^Plan snapshot is not the active fresh heartbeat|^Plan request cancelled or stale/.test(message))
+    return "stale_heartbeat";
+  if (!sdkTurnAttempted) return stage === "input" ? "invalid_input" : "stale_heartbeat";
+  const status = Number(error?.status ?? error?.statusCode);
+  if (status === 401 || status === 403 ||
+      /\b(unauthorized|not authenticated|authentication required|login required|please (log|sign) in|http (401|403))\b/i.test(message))
+    return "sdk_auth_unavailable";
+  if (error?.name === "TimeoutError" ||
+      ["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"].includes(error?.code) ||
+      /\b(timeout|timed out)\b/i.test(message)) return "timeout";
+  if (["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"].includes(error?.code) ||
+      /\b(runtime|responseSchema|schema|unsupported|module)\b/i.test(message))
+    return "sdk_runtime_or_schema";
+  return "unknown";
+}
 async function readBoundedJson(req, maxBytes) {
   const chunks = [];
   let length = 0;
@@ -178,21 +199,30 @@ export function createAgentServer({
         return send(400, { error: "Invalid Start mode or request cap" });
       activeRequestAbort?.abort();
       session?.planSession?.stop();
-      session = {
+      const nextSession = {
         token: randomBytes(24).toString("base64url"),
         id: randomBytes(16).toString("hex"), // not the bearer token; never sent to the model
         mode: value.mode,
         limit: value.limit,
         count: 0,
         planCount: 0,
+        sdkTurnAttempted: false,
         gameId: null,
         planAdmission: null, // bounded heartbeats buffered only during shared pacing
-        planSession: value.mode === "hybrid" && planModel && requireStartSession
-          ? createPlanSession({ planner: planModel, now: planNow,
-              maxSnapshotAgeMs: 20_000, maxHeartbeatGapMs: 2_000, maxTickLag: 200 })
-          : null,
+        planSession: null,
         expiresAt: performance.now() + 15 * 60_000,
       };
+      if (value.mode === "hybrid" && planModel && requireStartSession) {
+        nextSession.planSession = createPlanSession({
+          planner: (args) => {
+            nextSession.sdkTurnAttempted = true;
+            return planModel(args);
+          },
+          now: planNow, maxSnapshotAgeMs: 20_000,
+          maxHeartbeatGapMs: 2_000, maxTickLag: 200,
+        });
+      }
+      session = nextSession;
       return send(200, {
         token: session.token,
         mode: session.mode,
@@ -219,6 +249,19 @@ export function createAgentServer({
           performance.now() >= authorized.expiresAt) {
         return send(403, { error: "Hybrid planner requires explicit Start and opt-in" });
       }
+      const planDiagnostic = async (status, reason, attempted = authorized.sdkTurnAttempted) => {
+        const code = PLAN_REASONS.has(reason) ? reason : "unknown";
+        const safe = { error: `Planner unavailable (${code})`, reason_code: code,
+          sdk_turn_attempted: Boolean(attempted), plan_count: authorized.planCount };
+        try {
+          await log({ timestamp: new Date().toISOString(),
+            event: "copilot_plan_diagnostic", policy: COPILOT_PLAN_PROMPT_VERSION,
+            provider: attempted ? "official-copilot-sdk" : "none",
+            reason_code: code, sdk_turn_attempted: Boolean(attempted),
+            plan_count: authorized.planCount });
+        } catch { /* log failure cannot reveal an upstream error or change the response */ }
+        return send(status, safe);
+      };
       if (req.method === "GET" && pathname === "/plan") {
         return send(200, { plan: authorized.gameId === null ? null :
           authorized.planSession.getPlan({ session_id: authorized.id,
@@ -258,14 +301,17 @@ export function createAgentServer({
           return send(200, { plan: authorized.planSession.getPlan({
             session_id: authorized.id, game_id: authorized.gameId }) });
         } catch (error) {
-          return send(error instanceof RangeError ? 413 : 400,
-            { error: "Invalid or stale planner heartbeat" });
+          const reason = classifyPlanFailure(error, "input", false);
+          return planDiagnostic(error instanceof RangeError ? 413 :
+            reason === "stale_heartbeat" ? 409 : 400, reason, false);
         }
       }
       if (busy) return send(429, { error: "A decision request is already pending" });
       if (authorized.planCount >= maxPlanRequestsPerSession)
         return send(403, { error: "Copilot plan request cap reached" });
       busy = true; // shares Jev's single-flight lock; heartbeats can still arrive
+      authorized.sdkTurnAttempted = false;
+      let stage = "input";
       try {
         const value = await readBoundedJson(req, 16_384);
         if (!value || typeof value !== "object" || Array.isArray(value) ||
@@ -274,7 +320,7 @@ export function createAgentServer({
             !Object.hasOwn(value, "region_ids") || !Object.hasOwn(value, "summary") ||
             session !== authorized || performance.now() >= authorized.expiresAt ||
             (authorized.gameId !== null && authorized.gameId !== value.game_id)) {
-          return send(400, { error: "Invalid or changed planner snapshot" });
+          return await planDiagnostic(400, "invalid_input");
         }
         const snapshot = { ...value, session_id: authorized.id, observed_at_ms: planNow() };
         if (authorized.gameId === null) {
@@ -289,15 +335,17 @@ export function createAgentServer({
         }
         // Same application-level pacing as Jev. No retry or replacement plan.
         authorized.planAdmission = { snapshot, beats: [] };
+        stage = "pacing";
         while (performance.now() < lastCall + minimumIntervalMs) {
           await delay(Math.ceil(lastCall + minimumIntervalMs - performance.now()));
         }
         if (session !== authorized || performance.now() >= authorized.expiresAt ||
             authorized.planCount >= maxPlanRequestsPerSession) {
-          return send(409, { error: "Start session changed before planning" });
+          return await planDiagnostic(409, "stale_heartbeat");
         }
         lastCall = performance.now();
         authorized.planCount++; // count attempts, including failures; max three per Start
+        stage = "plan";
         const running = authorized.planSession.plan(snapshot);
         const buffered = authorized.planAdmission.beats;
         authorized.planAdmission = null;
@@ -315,17 +363,22 @@ export function createAgentServer({
           performance.now() < authorized.expiresAt &&
           authorized.planSession.getPlan({ session_id: authorized.id,
             game_id: authorized.gameId })?.plan_version === plan.plan_version;
-        if (!stillCurrent()) return send(409, { error: "Plan expired or session changed" });
+        if (!stillCurrent()) return await planDiagnostic(409, "stale_heartbeat");
         await log({ timestamp: new Date().toISOString(),
           policy: COPILOT_PLAN_PROMPT_VERSION, provider: "official-copilot-sdk",
           model: "gpt-5-mini", game_id: authorized.gameId,
           source_tick: plan.source_tick, plan_version: plan.plan_version });
-        if (!stillCurrent()) return send(409, { error: "Plan expired or session changed" });
+        if (!stillCurrent()) return await planDiagnostic(409, "stale_heartbeat");
         return send(200, { plan });
       } catch (error) {
-        // Do not include SDK/provider errors, prompts or credentials in HTTP/logs.
-        return send(error instanceof RangeError ? 413 : 409,
-          { error: "Planner rejected stale input or inference failed" });
+        // Never include raw provider messages, bodies, prompts or credentials.
+        const reason = classifyPlanFailure(error, stage, authorized.sdkTurnAttempted);
+        const status = error instanceof RangeError ? 413 :
+          reason === "invalid_input" ? 400 :
+          reason === "stale_heartbeat" ? 409 :
+          reason === "sdk_auth_unavailable" ? 503 :
+          reason === "timeout" ? 504 : 502;
+        return await planDiagnostic(status, reason);
       } finally {
         authorized.planAdmission = null;
         busy = false;

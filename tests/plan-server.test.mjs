@@ -138,8 +138,9 @@ test('server stamps identity/time, calls injected planner only on POST and injec
   assert.equal(jev[0].state.objective.text, response.body.plan.objective);
   assert.equal(jev[0].state.objective.source_tick, 100);
   assert.equal(jev[0].questions.branch.type, 'choice');
-  assert.equal(logs[0].policy, 'copilot-plan-v1');
-  assert.equal(logs[1].planProvenance.promptVersion, 'copilot-plan-v1');
+  assert.ok(logs.some((row) => row.policy === 'copilot-plan-v1' && !row.event));
+  assert.equal(logs.find((row) => row.planProvenance)?.planProvenance.promptVersion,
+    'copilot-plan-v1');
   assert.ok(!JSON.stringify(logs).includes(token));
   clock = 4000;
   assert.equal((await json(url, '/plan', { token })).body.plan, null);
@@ -257,6 +258,67 @@ test('plan cap is independent of Jev cap; malformed snapshots and browser plans 
   assert.equal((await json(url, '/health')).body.planCallsUsed, 3);
 });
 
+test('early invalid or stale planner snapshots never enter the SDK turn', async (t) => {
+  let calls = 0;
+  const logs = [];
+  const url = await serve(t, {
+    planner: async (args) => { calls++; return fakePlan(args); },
+    log: async (row) => logs.push(row),
+  });
+  const token = await start(url);
+  const invalid = planBody();
+  invalid.summary.secret = 'fake-secret-do-not-forward';
+  const bad = await json(url, '/plan', { method: 'POST', body: invalid, token });
+  assert.equal(bad.status, 400);
+  assert.deepEqual({ reason_code: bad.body.reason_code,
+    sdk_turn_attempted: bad.body.sdk_turn_attempted, plan_count: bad.body.plan_count },
+  { reason_code: 'invalid_input', sdk_turn_attempted: false, plan_count: 0 });
+  assert.equal(calls, 0);
+  assert.equal(logs.at(-1).reason_code, 'invalid_input');
+  assert.equal(logs.at(-1).sdk_turn_attempted, false);
+  assert.ok(!JSON.stringify({ bad, logs }).includes('fake-secret-do-not-forward'));
+  assert.ok(!JSON.stringify({ bad, logs }).includes(token));
+  assert.equal((await json(url, '/plan', { method: 'POST', body: planBody(), token })).status, 200);
+  assert.equal(calls, 1);
+  assert.equal((await json(url, '/plan/heartbeat', { method: 'POST', body: beatBody(101), token })).status, 200);
+  const stale = await json(url, '/plan', { method: 'POST', body: planBody(100), token });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.reason_code, 'stale_heartbeat');
+  assert.equal(stale.body.sdk_turn_attempted, false);
+  assert.equal(stale.body.plan_count, 1);
+  assert.equal(calls, 1);
+});
+
+test('SDK failures return only whitelisted reason codes and redact provider/token content', async (t) => {
+  for (const [error, code, status] of [
+    [Object.assign(new Error('Unauthorized fake-secret-provider-body'), { status: 401 }), 'sdk_auth_unavailable', 503],
+    [new Error('Unsupported responseSchema fake-secret-provider-body'), 'sdk_runtime_or_schema', 502],
+    [new Error('Request timed out fake-secret-provider-body'), 'timeout', 504],
+    [new Error('unrecognized fake-secret-provider-body'), 'unknown', 502],
+  ]) {
+    await t.test(code, async (caseContext) => {
+      const logs = [];
+      const url = await serve(caseContext, {
+        planner: async () => { throw error; },
+        log: async (row) => logs.push(row),
+      });
+      const token = await start(url);
+      const response = await json(url, '/plan', { method: 'POST', body: planBody(), token });
+      assert.equal(response.status, status);
+      assert.equal(response.body.reason_code, code);
+      assert.equal(response.body.sdk_turn_attempted, true);
+      assert.equal(response.body.plan_count, 1);
+      assert.equal(logs.at(-1).event, 'copilot_plan_diagnostic');
+      assert.equal(logs.at(-1).reason_code, code);
+      assert.equal(logs.at(-1).sdk_turn_attempted, true);
+      assert.equal(logs.at(-1).plan_count, 1);
+      const visible = JSON.stringify({ response, logs });
+      assert.ok(!visible.includes('fake-secret-provider-body'));
+      assert.ok(!visible.includes(token));
+    });
+  }
+});
+
 test('Stop during asynchronous logging cannot return a stale plan or Jev decision', async (t) => {
   const planLog = deferred(), jevLog = deferred();
   let logCalls = 0;
@@ -266,7 +328,8 @@ test('Stop during asynchronous logging cannot return a stale plan or Jev decisio
       const req = JSON.parse(init.body);
       return new Response(JSON.stringify(fakeJev(req)));
     },
-    log: () => {
+    log: (row) => {
+      if (row.event === 'copilot_plan_diagnostic') return;
       logCalls++;
       return logCalls === 1 ? planLog.promise : jevLog.promise;
     },
