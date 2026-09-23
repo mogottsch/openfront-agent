@@ -4,7 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(process.env.OPENFRONT_DIR || "../OpenFrontIO");
 const load = (path: string) => import(pathToFileURL(resolve(root, path)).href);
@@ -16,7 +16,7 @@ const { GameMapImpl } = await load("src/core/game/GameMap.ts");
 const { createNationsForGame } = await load("src/core/game/NationCreation.ts");
 const { PseudoRandom } = await load("src/core/PseudoRandom.ts");
 const { simpleHash } = await load("src/core/Util.ts");
-const { GameMapType, GameMapSize, GameMode, GameType, Difficulty, PlayerType, PlayerInfo } =
+const { GameMapType, GameMapSize, GameMode, GameType, Difficulty, PlayerType, PlayerInfo, UnitType } =
   await load("src/core/game/Game.ts");
 const { GameUpdateType } = await load("src/core/game/GameUpdates.ts");
 // TerrainMapLoader caches *mutable* map instances by map/size. Build fresh
@@ -32,7 +32,7 @@ function freshMap(metadata: any, data: Uint8Array) {
 
 const policies = ["fixed20-wilderness", "fixed50-land"] as const;
 type Policy = (typeof policies)[number];
-type Options = {
+export type Options = {
   smoke: boolean;
   seeds: string[];
   minutes: number;
@@ -124,7 +124,21 @@ function chooseTarget(game: any, human: any, policy: Policy): any | null {
   return neighbors[0] ?? (human.sharesBorderWith(wilderness) ? wilderness : null);
 }
 
-async function run(seed: string, policy: Policy, opts: Options) {
+export type BenchmarkChoice = {
+  action: { kind: "wait" } | { kind: "attack"; target_id: number | null; fraction: number };
+  record?: any;
+  stop?: "censored-call-cap" | "censored-model-error";
+};
+export type BenchmarkHooks = {
+  // The engine is paused while awaiting a decision, then receives only the
+  // selected candidate as a normal stamped intent on the following turn.
+  decide?: (snapshot: { game: any; human: any; second: number }) => Promise<BenchmarkChoice>;
+  paceTick?: () => Promise<void>;
+};
+
+export async function runBenchmarkMatch(
+  seed: string, policy: Policy | "jev-v4.1", opts: Options, hooks: BenchmarkHooks = {},
+) {
   const clientID = "benchmark-human";
   const gameStart = {
     gameID: seed,
@@ -211,6 +225,9 @@ async function run(seed: string, policy: Policy, opts: Options) {
   }));
   const actions = { submitted: 0, wilderness: 0, nation: 0, troopsSubmitted: 0 };
   const snapshots: any[] = [];
+  const decisions: any[] = [];
+  let stoppedReason: string | null = null;
+  let liveTicks = 0;
   let lastDecisionSecond = -1;
   // maxTicks counts live gameplay ticks, excluding setup/spawn turns.
   for (let i = 0; i < opts.maxTicks && winUpdates === 0; i++) {
@@ -218,20 +235,62 @@ async function run(seed: string, policy: Policy, opts: Options) {
     const intents: any[] = [];
     if (human.isAlive() && !game.inSpawnPhase() && second !== lastDecisionSecond) {
       lastDecisionSecond = second;
-      const target = chooseTarget(game, human, policy);
-      if (target && human.troops() > 0) {
-        const fraction = policy === "fixed20-wilderness" ? 0.2 : 0.5;
-        const troops = Math.floor(human.troops() * fraction);
-        if (troops > 0) {
-          intents.push({ type: "attack", clientID, targetID: target.id(), troops });
+      if (policy === "jev-v4.1") {
+        if (!hooks.decide || !hooks.paceTick) throw new Error("Jev benchmark requires a decision hook and paced ticks");
+        const selected = await hooks.decide({ game, human, second });
+        if (selected.stop) {
+          stoppedReason = selected.stop;
+          if (selected.record) decisions.push({ second, ...selected.record, intent: null });
+          break;
+        }
+        if (!selected.action || !["wait", "attack"].includes(selected.action.kind)) {
+          throw new Error("Jev hook returned no valid action");
+        }
+        // The adapter must resolve/recheck the chosen action before invoking
+        // this hook. This runner checks the actual target again, never replaces
+        // a rejected answer with a scripted attack.
+        const choice = selected.action;
+        const record = { second, ...(selected.record ?? {}), intent: null as any };
+        if (choice.kind === "attack") {
+          if (![0.1, 0.2, 0.3, 0.4, 0.5].includes(choice.fraction))
+            throw new Error("Jev action fraction outside approved menu");
+          const target = choice.target_id === null
+            ? game.terraNullius() : game.playerBySmallID(choice.target_id);
+          if (target !== game.terraNullius() && (
+            !target.isPlayer() || !target.isAlive() || !human.canAttackPlayer(target)
+          )) throw new Error("Jev action target no longer legal");
+          if (target.isPlayer() && target.type() === PlayerType.Bot && choice.fraction > 0.2)
+            throw new Error("Jev tribe attack exceeds approved ceiling");
+          if (!human.sharesBorderWith(target)) throw new Error("Jev target no longer borders us");
+          const troops = Math.floor(human.troops() * choice.fraction);
+          if (troops < 1) throw new Error("Jev attack had no available troops");
+          const intent = { type: "attack", clientID, targetID: target.id(), troops };
+          intents.push(intent);
+          record.intent = { type: intent.type, targetID: intent.targetID, troops };
           actions.submitted++;
           actions.troopsSubmitted += troops;
           if (target === game.terraNullius()) actions.wilderness++;
           else actions.nation++;
         }
+        decisions.push(record);
+      } else {
+        const target = chooseTarget(game, human, policy);
+        if (target && human.troops() > 0) {
+          const fraction = policy === "fixed20-wilderness" ? 0.2 : 0.5;
+          const troops = Math.floor(human.troops() * fraction);
+          if (troops > 0) {
+            intents.push({ type: "attack", clientID, targetID: target.id(), troops });
+            actions.submitted++;
+            actions.troopsSubmitted += troops;
+            if (target === game.terraNullius()) actions.wilderness++;
+            else actions.nation++;
+          }
+        }
       }
     }
+    if (hooks.paceTick) await hooks.paceTick();
     step(intents);
+    liveTicks++;
     const elapsed = game.elapsedGameSeconds();
     if (Math.round(elapsed * 10) % 300 === 0) {
       snapshots.push({
@@ -261,10 +320,14 @@ async function run(seed: string, policy: Policy, opts: Options) {
   const top = [...game.allPlayers()].sort(
     (a: any, b: any) => b.numTilesOwned() - a.numTilesOwned() || a.id().localeCompare(b.id()),
   );
+  const structureTypes = [
+    UnitType.Port, UnitType.City, UnitType.Factory, UnitType.DefensePost,
+    UnitType.MissileSilo, UnitType.SAMLauncher,
+  ];
   return {
     seed, policy, spawn: { x, y }, opponentSpawns,
     completed,
-    status: completed ? "engine-win" : "censored-tick-cap",
+    status: completed ? "engine-win" : stoppedReason ?? "censored-tick-cap",
     win: completed ? winner === human : null,
     winRule,
     winnerShare,
@@ -274,6 +337,7 @@ async function run(seed: string, policy: Policy, opts: Options) {
     } : null,
     elapsedSeconds,
     ticks: game.ticks(),
+    liveTicks,
     finalHash: game.hash(),
     human: {
       alive: human.isAlive(), tiles: human.numTilesOwned(),
@@ -283,18 +347,24 @@ async function run(seed: string, policy: Policy, opts: Options) {
     standings: top.map((p: any) => ({
       id: p.id(), name: p.name(), type: p.type(),
       tiles: p.numTilesOwned(), alive: p.isAlive(),
+      troops: p.troops(), gold: p.gold().toString(),
+      structures: Object.fromEntries(structureTypes.map((type: string) => [
+        type, p.units().filter((u: any) => u.type() === type).length,
+      ])),
     })),
     actions, snapshots,
+    ...(policy === "jev-v4.1" ? { decisions } : {}),
   };
 }
 
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 const opts = parseArgs(process.argv.slice(2));
 console.debug = () => {}; // upstream emits per-tick debug lines
 const engineCommit = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const results: any[] = [];
 for (const seed of opts.seeds) {
   for (const policy of policies) {
-    const row = await run(seed, policy, opts);
+    const row = await runBenchmarkMatch(seed, policy, opts);
     results.push(row);
     console.log(`${seed} ${policy}: ${row.status} winner=${row.winner?.name ?? "none"} ` +
       `time=${row.elapsedSeconds.toFixed(1)}s humanTiles=${row.human.tiles} ` +
@@ -342,4 +412,5 @@ console.log(`Saved ${results.length} runs (${completedPairs.length} completed pa
 if (!opts.smoke && completedPairs.length !== pairs.length) {
   console.error("Incomplete matches: no win-rate inference; raise --max-ticks or inspect the engine.");
   process.exitCode = 2;
+}
 }
