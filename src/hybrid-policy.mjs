@@ -10,7 +10,7 @@ import {
 } from "../web/hybrid-observation.js";
 import { buildRequest as buildLandRequest, parseDecision } from "./policy.mjs";
 
-export const HYBRID_POLICY_VERSION = "hybrid-branch-v2-naval-proposed";
+export const HYBRID_POLICY_VERSION = "hybrid-branch-v2.1-nav-clarity";
 
 export function buildHybridRequest(input, model = "jev-latest") {
   const clean = validateHybridInput(input);
@@ -20,7 +20,7 @@ export function buildHybridRequest(input, model = "jev-latest") {
     branch: {
       type: "choice",
       instructions: [
-        "Choose our immediate action family in OpenFront. Decide among waiting, a normal land attack, a worker-checked coastal transport-boat attack, and building one City only when offered. Preserve survival and growth while gaining territory and developing our economy; a branch being feasible is not a command to take it.",
+        "Choose our immediate action family in OpenFront. Decide among waiting, a normal land attack, a geometric coastal transport-boat candidate with a worker-confirmed launch source, and building one City only when offered. Preserve survival and growth while gaining territory and developing our economy; a branch being feasible is not a command to take it.",
         "The optional objective is a strategic suggestion, not a game rule or legal permission. Use current reserve, existing attacks, pressure, available gold, City costs/capacity benefit and naval fleet/coast facts. An island with no land target cannot expand further without a boat. Worker-confirmed spawn is not guaranteed travel, landing or conquest. Other future moves and unprovided site effects are unknown; candidate omissions are disclosed.",
         "If choosing a branch, the independently answered land_action, city_site or boat_action Choice names the actual candidate; each can still choose wait/save gold. Never infer that an option was silently filtered because of strategic priority.",
       ],
@@ -50,9 +50,9 @@ export function buildHybridRequest(input, model = "jev-latest") {
     questions.boat_action = {
       type: "choice",
       instructions: [
-        "Premise: IF we choose boat_attack, select ONE worker-checked coastal target/size or wait. This answer is independent of the branch; ignore it if another branch wins.",
+        "Premise: IF we choose boat_attack, select ONE offered geometric coastal target/size with a worker-confirmed source, or wait. This answer is independent of the branch; ignore it if another branch wins.",
         "A boat needs no Port in this engine. It commits the chosen percentage of CURRENT available troops to a normal naval transport intent; the engine rechecks legality, path, boat cap and route. Target-region size and shore separation are geometric facts, not combat or route guarantees. A successful landing starts a land attack. Existing boats still travel when we wait; do not blindly stack boats or empty the reserve. Tribes offer only 10%/20%; other targets offer up to 50%.",
-        "When land expansion is exhausted on an island, consider a modest boat to accessible wilderness or a weak coast if a usable home army remains; otherwise wait. An optional strategic objective is advice, not a legal override.",
+        "When land expansion is exhausted on an island, consider a modest boat toward offered wilderness coast or a weak player coast if a usable home army remains; otherwise wait. An optional strategic objective is advice, not a legal override.",
       ],
       criteria: navalCriteria(actions.boat),
     };

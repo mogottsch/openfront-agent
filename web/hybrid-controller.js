@@ -337,16 +337,39 @@ export class HybridController extends LandController {
               : {}),
           }
         : actionCriteria(landActions);
+      const cityStatus = !this.cityProposal
+        ? "not yet scanned or failed"
+        : !city
+          ? "scan expired"
+          : city.candidates.length
+            ? "sites offered"
+            : "zero worker-legal sites";
+      const navalStatus = !this.navalAdapter
+        ? "feature disabled"
+        : !this.navalProposal
+          ? "not yet scanned or failed"
+          : !naval
+            ? "scan expired"
+            : naval.candidates.length
+              ? "sites offered"
+              : "zero worker-legal sites";
       this.onUpdate({
         state,
         actions: criteria,
         mode: hybrid
           ? `land + ${city?.candidates.length ?? 0} City + ${naval?.candidates.length ?? 0} boat opportunities`
-          : "land only (no fresh worker-legal City or naval sites)",
+          : `land only (City: ${cityStatus}; navy: ${navalStatus})`,
       });
       if (Object.keys(landActions).length === 1 && !hybrid) {
+        // A stranded island must not stay blind for most of a 15s window.
+        // Re-scan at most every 5s while no action except wait is available.
+        const due = this.now() + 5000;
+        this.nextCityScanAt = Math.min(this.nextCityScanAt, due);
+        if (this.navalAdapter)
+          this.nextNavalScanAt = Math.min(this.nextNavalScanAt, due);
         this.onUpdate({
-          status: "Waiting for legal land actions and next City scan",
+          status:
+            "Waiting for legal actions; next worker scans within 5 seconds",
         });
         return;
       }
@@ -372,6 +395,19 @@ export class HybridController extends LandController {
         outcome =
           "discarded: state unavailable or observation older than 2 seconds";
       } else if (hybrid) {
+        const branchKinds = {
+          wait: ["wait"],
+          land_attack: ["land", "wait"],
+          city_build: ["city", "wait"],
+          boat_attack: ["boat", "wait"],
+        };
+        if (
+          !branchKinds[decision.branch]?.includes(decision.kind) ||
+          (decision.kind === "wait" &&
+            decision.selected !==
+              (decision.branch === "city_build" ? "save_gold" : "wait"))
+        )
+          throw new Error("Model branch and selected action kind disagree");
         const expectedContext = {
           game_id: input.game_id,
           snapshot_tick: snapshot.tick,

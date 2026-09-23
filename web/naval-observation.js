@@ -222,7 +222,7 @@ export function navalCriteria(actions) {
           }
         : {
             action:
-              "Send a normal TransportShip attack to this worker-checked coast using current available troops.",
+              "Send a normal TransportShip attack toward this geometric coast with worker-confirmed launch source. Water route and successful landing are NOT guaranteed.",
             candidate_id: a.candidate_id,
             target_type: a.target_type,
             target_owner_id: a.target_owner_id,

@@ -119,7 +119,14 @@ function navalProposal() {
   };
 }
 
-function setup({ decision, decideHybrid, propose, planClient, naval } = {}) {
+function setup({
+  decision,
+  decideHybrid,
+  propose,
+  planClient,
+  naval,
+  navalPropose,
+} = {}) {
   let time = 0;
   const status = { ready: true, ended: false, tick: 100 };
   const land = observation(8000, 20000, "tribe");
@@ -156,7 +163,7 @@ function setup({ decision, decideHybrid, propose, planClient, naval } = {}) {
     ? {
         propose: async (opts) => {
           calls.push({ kind: "naval-scan", opts });
-          return naval;
+          return navalPropose ? navalPropose(opts) : naval;
         },
         canExecute: async (id, fraction) => {
           calls.push({ kind: "naval-legal", id, fraction });
@@ -220,6 +227,7 @@ function setup({ decision, decideHybrid, propose, planClient, naval } = {}) {
     adapter,
     builder,
     status,
+    land,
     calls,
     updates,
     timers,
@@ -288,6 +296,79 @@ test("invented boat size cannot bypass the offered Choice", async () => {
   await setImmediate();
   assert.deepEqual(s.sends, []);
   assert.match(s.updates.at(-1).status, /not an offered target and size/);
+});
+
+test("naval scan failure cannot conceal a still-valid City action", async () => {
+  const s = setup({
+    naval: navalProposal(),
+    navalPropose: () => {
+      throw new Error("naval worker failed");
+    },
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.deepEqual(s.sends, [{ kind: "city", id: "solo-1/map@100#1:c1" }]);
+  assert.ok(
+    s.updates.some((x) => x.status?.includes("Naval scan unavailable")),
+  );
+});
+
+test("mismatched branch and boat kind is rejected before any intent", async () => {
+  const naval = navalProposal();
+  const s = setup({
+    naval,
+    decision: {
+      branch: "land_attack",
+      kind: "boat",
+      selected: "boat_1_20",
+      candidate_id: naval.candidates[0].id,
+      fraction: 0.2,
+      context: {
+        game_id: "solo-1",
+        snapshot_tick: 100,
+        building_snapshot_id: "solo-1/map@100#1",
+        naval_snapshot_id: naval.snapshot_id,
+        plan_version: null,
+      },
+    },
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.deepEqual(s.sends, []);
+  assert.match(
+    s.updates.at(-1).status,
+    /branch and selected action kind disagree/,
+  );
+});
+
+test("wait-only island accelerates re-scan to five seconds and labels zero vs expired", async () => {
+  const city = siteProposal();
+  city.candidates = [];
+  city.coverage.offered_count = 0;
+  city.coverage.omitted_count = 3;
+  city.omissions.not_buildable += 1;
+  const navy = navalProposal();
+  navy.candidates = [];
+  navy.coverage.offered_count = 0;
+  navy.coverage.omitted_count = 1;
+  navy.omissions.not_buildable = 1;
+  const s = setup({ naval: navy, propose: () => city });
+  s.land.border.wilderness_edges = 0;
+  s.land.border.player_edges = 0;
+  s.land.border.water_edges += 16;
+  s.land.neighbors = [];
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.equal(s.controller.count, 0);
+  assert.equal(s.controller.nextCityScanAt, 5000);
+  assert.equal(s.controller.nextNavalScanAt, 5000);
+  assert.ok(s.updates.some((x) => x.mode?.includes("zero worker-legal sites")));
+  s.setTime(3000);
+  s.status.tick = 130;
+  s.timers.shift()();
+  await setImmediate();
+  assert.ok(s.updates.some((x) => x.mode?.includes("scan expired")));
+  s.controller.stop();
 });
 
 test("optional Copilot plan is requested once before Jev and its active version binds the City choice", async () => {
