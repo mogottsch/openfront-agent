@@ -25,6 +25,13 @@ const PLAN_REASONS = new Set(["invalid_input", "stale_heartbeat", "sdk_auth_unav
   "sdk_runtime_or_schema", "timeout", "unknown"]);
 const SERVER_PLAN_STAGES = new Set(["server_input", "server_heartbeat", "server_pacing",
   "plan_session", "response_liveness", "server_log", "unexpected"]);
+const SDK_EVENT_TYPES = new Set(["authentication", "authorization", "quota",
+  "rate_limit", "context_limit", "query"]);
+const SDK_EVENT_CODES = new Set(["quota_exceeded", "session_quota_exceeded",
+  "billing_not_configured", "user_weekly_rate_limited", "user_global_rate_limited",
+  "rate_limited", "user_model_rate_limited", "integration_rate_limited"]);
+const SDK_EVENT_STATUSES = new Set([400, 401, 402, 403, 404, 408, 409,
+  413, 422, 429, 500, 502, 503, 504]);
 function safePlanStage(error, serverStage) {
   if (error instanceof CopilotPhaseError &&
       COPILOT_FAILURE_STAGES.includes(error.failure_stage)) return error.failure_stage;
@@ -32,6 +39,9 @@ function safePlanStage(error, serverStage) {
 }
 function classifyPlanFailure(error, stage, sdkTurnAttempted) {
   if (error instanceof CopilotPhaseError) {
+    if (["authentication", "authorization"].includes(error.sdk_error_type) ||
+        error.sdk_status === 401 || error.sdk_status === 403)
+      return "sdk_auth_unavailable";
     if (["preflight", "postflight_freshness"].includes(error.failure_stage))
       return "stale_heartbeat";
     if (["parse_json", "validate_plan", "build_prompt", "create_client",
@@ -268,18 +278,26 @@ export function createAgentServer({
         return send(403, { error: "Hybrid planner requires explicit Start and opt-in" });
       }
       const planDiagnostic = async (status, reason,
-        attempted = authorized.sdkTurnAttempted, failureStage = "server_input") => {
+        attempted = authorized.sdkTurnAttempted, failureStage = "server_input", sdkError = null) => {
         const code = PLAN_REASONS.has(reason) ? reason : "unknown";
         const phase = SERVER_PLAN_STAGES.has(failureStage) ||
           COPILOT_FAILURE_STAGES.includes(failureStage) ? failureStage : "unexpected";
+        const type = SDK_EVENT_TYPES.has(sdkError?.sdk_error_type) ? sdkError.sdk_error_type : null;
+        const details = {
+          ...(type ? { sdk_error_type: type } : {}),
+          ...(type && SDK_EVENT_CODES.has(sdkError?.sdk_error_code) ?
+            { sdk_error_code: sdkError.sdk_error_code } : {}),
+          ...(SDK_EVENT_STATUSES.has(sdkError?.sdk_status) ?
+            { sdk_status: sdkError.sdk_status } : {}),
+        };
         const safe = { error: `Planner unavailable (${code})`, reason_code: code,
           failure_stage: phase, sdk_turn_attempted: Boolean(attempted),
-          plan_count: authorized.planCount };
+          plan_count: authorized.planCount, ...details };
         try {
           await log({ timestamp: new Date().toISOString(),
             event: "copilot_plan_diagnostic", policy: COPILOT_PLAN_PROMPT_VERSION,
             provider: attempted ? "official-copilot-sdk" : "none",
-            reason_code: code, failure_stage: phase,
+            reason_code: code, failure_stage: phase, ...details,
             sdk_turn_attempted: Boolean(attempted), plan_count: authorized.planCount });
         } catch { /* log failure cannot reveal an upstream error or change the response */ }
         return send(status, safe);
@@ -411,7 +429,8 @@ export function createAgentServer({
           reason === "stale_heartbeat" ? 409 :
           reason === "sdk_auth_unavailable" ? 503 :
           reason === "timeout" ? 504 : 502;
-        return await planDiagnostic(status, reason, attempted, failureStage);
+        return await planDiagnostic(status, reason, attempted, failureStage,
+          error instanceof CopilotPhaseError ? error : null);
       } finally {
         authorized.planAdmission = null;
         busy = false;

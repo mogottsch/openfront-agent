@@ -244,6 +244,84 @@ test('fixed SDK phase tags redact upstream errors and preserve cleanup ordering'
   }
 });
 
+test('scoped session.error listener captures only whitelisted typed metadata and unsubscribes', async () => {
+  for (const [data, expected] of [
+    [{ errorType: 'authentication', statusCode: 401 }, { sdk_error_type: 'authentication', sdk_status: 401 }],
+    [{ errorType: 'authorization', statusCode: 403 }, { sdk_error_type: 'authorization', sdk_status: 403 }],
+    [{ errorType: 'quota', errorCode: 'billing_not_configured', statusCode: 402 },
+      { sdk_error_type: 'quota', sdk_error_code: 'billing_not_configured', sdk_status: 402 }],
+    [{ errorType: 'rate_limit', errorCode: 'user_model_rate_limited', statusCode: 429 },
+      { sdk_error_type: 'rate_limit', sdk_error_code: 'user_model_rate_limited', sdk_status: 429 }],
+    [{ errorType: 'context_limit', statusCode: 413 }, { sdk_error_type: 'context_limit', sdk_status: 413 }],
+    [{ errorType: 'query', statusCode: 400 }, { sdk_error_type: 'query', sdk_status: 400 }],
+    [{ errorType: 'secret-type', errorCode: 'secret-code', statusCode: 218 }, {}],
+  ]) {
+    const listeners = new Set();
+    const calls = [];
+    const secret = 'sensitive-raw-event-value';
+    const client = {
+      async start() {},
+      async createSession() { return {
+        on(type, handler) {
+          assert.equal(type, 'session.error');
+          listeners.add(handler);
+          calls.push('subscribe');
+          return () => { listeners.delete(handler); calls.push('unsubscribe'); };
+        },
+        async sendAndWait() {
+          assert.equal(listeners.size, 1);
+          const event = { type: 'session.error', data: {
+            ...data, message: secret, stack: secret, providerCallId: secret,
+            serviceRequestId: secret, url: `https://${secret}.example`,
+          } };
+          for (const handler of listeners) handler(event);
+          throw new Error(secret); // pinned SDK also drops typed fields here
+        },
+        async disconnect() { calls.push('disconnect'); },
+      }; },
+      async stop() { calls.push('stop'); },
+    };
+    const planner = createCopilotPlanner({ model: 'mock', now: () => 1100,
+      createClient: async () => client });
+    await assert.rejects(planner({ snapshot: snapshot(), getCurrentState: () =>
+      ({ game_id: 'solo-1', tick: 420, plan_version: 0 }) }), (error) => {
+      phase('send_and_wait')(error);
+      for (const [key, value] of Object.entries(expected)) assert.equal(error[key], value);
+      for (const key of ['sdk_error_type', 'sdk_error_code', 'sdk_status']) {
+        if (!Object.hasOwn(expected, key)) assert.equal(error[key], undefined);
+      }
+      assert.equal(error.cause, undefined);
+      assert.ok(!String(error).includes(secret));
+      assert.ok(!JSON.stringify(error).includes(secret));
+      return true;
+    });
+    assert.equal(listeners.size, 0);
+    assert.deepEqual(calls, ['subscribe', 'unsubscribe', 'disconnect', 'stop']);
+  }
+});
+
+test('successful structured send also unsubscribes; sub-agent error events are ignored', async () => {
+  const listeners = new Set();
+  const client = {
+    async start() {},
+    async createSession() { return {
+      on(_type, handler) { listeners.add(handler); return () => listeners.delete(handler); },
+      async sendAndWait() {
+        for (const handler of listeners) handler({ agentId: 'subagent',
+          data: { errorType: 'authentication', statusCode: 401, message: 'secret' } });
+        return { data: { content: JSON.stringify(answer()) } };
+      },
+      async disconnect() {},
+    }; },
+    async stop() {},
+  };
+  const planner = createCopilotPlanner({ model: 'mock', now: () => 1100,
+    createClient: async () => client });
+  assert.deepEqual(await planner({ snapshot: snapshot(), getCurrentState: () =>
+    ({ game_id: 'solo-1', tick: 420, plan_version: 0 }) }), answer());
+  assert.equal(listeners.size, 0);
+});
+
 test('cleanup cannot replace the first failed phase; only fixed auth/timeout metadata survives', async () => {
   const secret = 'raw-secret-provider-token';
   const auth = Object.assign(new Error(secret), { status: 401 });

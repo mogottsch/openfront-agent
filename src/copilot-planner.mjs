@@ -39,6 +39,30 @@ export const COPILOT_FAILURE_STAGES = Object.freeze([
   'postflight_freshness', 'cleanup', 'unexpected',
 ]);
 
+// SDK ErrorData also contains free-form message/stack/URL/request IDs. Never
+// copy those into application errors or logs, even indirectly via cause.
+const SDK_ERROR_TYPES = Object.freeze([
+  'authentication', 'authorization', 'quota', 'rate_limit',
+  'context_limit', 'query',
+]);
+const SDK_QUOTA_CODES = Object.freeze([
+  'quota_exceeded', 'session_quota_exceeded', 'billing_not_configured',
+]);
+const SDK_RATE_CODES = Object.freeze([
+  'user_weekly_rate_limited', 'user_global_rate_limited', 'rate_limited',
+  'user_model_rate_limited', 'integration_rate_limited',
+]);
+const SDK_HTTP_STATUSES = Object.freeze([400, 401, 402, 403, 404, 408, 409,
+  413, 422, 429, 500, 502, 503, 504]);
+function safeSdkErrorData(data) {
+  const type = SDK_ERROR_TYPES.includes(data?.errorType) ? data.errorType : null;
+  const codes = type === 'quota' ? SDK_QUOTA_CODES :
+    type === 'rate_limit' ? SDK_RATE_CODES : [];
+  const code = codes.includes(data?.errorCode) ? data.errorCode : null;
+  const status = SDK_HTTP_STATUSES.includes(data?.statusCode) ? data.statusCode : null;
+  return { type, code, status };
+}
+
 export class CopilotPhaseError extends Error {
   constructor(stage, original) {
     if (!COPILOT_FAILURE_STAGES.includes(stage)) throw new Error('Invalid Copilot phase');
@@ -52,6 +76,13 @@ export class CopilotPhaseError extends Error {
       'MODULE_NOT_FOUND'].includes(original?.code)) this.code = original.code;
     if (original?.name === 'TimeoutError') this.diagnostic_kind = 'timeout';
     if (original?.name === 'AuthenticationError') this.diagnostic_kind = 'auth';
+  }
+  attachSdkError(safe) {
+    if (this.failure_stage !== 'send_and_wait' || !safe) return;
+    if (SDK_ERROR_TYPES.includes(safe.type)) this.sdk_error_type = safe.type;
+    if ([...SDK_QUOTA_CODES, ...SDK_RATE_CODES].includes(safe.code))
+      this.sdk_error_code = safe.code;
+    if (SDK_HTTP_STATUSES.includes(safe.status)) this.sdk_status = safe.status;
   }
 }
 
@@ -167,9 +198,32 @@ export function createCopilotPlanner({
         previous_plan: previousPlan?.expires_tick > snapshot.tick ? previousPlan : null,
         expected_plan_version: previousVersion + 1, max_expires_tick: snapshot.tick + maxPlanTicks,
       }));
-      // SDK structured output is preview; independently validate the result.
-      const response = await atPhase('send_and_wait', () =>
-        session.sendAndWait({ prompt, responseSchema: PLAN_SCHEMA }, timeoutMs));
+      // SDK structured output is preview. Its sendAndWait converts a typed
+      // session.error into a plain Error(message), dropping ErrorData fields.
+      // Subscribe only for this one turn and retain ONLY fixed-code metadata.
+      let captured = null;
+      let unsubscribe;
+      let sendFailure = null;
+      let response;
+      try {
+        if (typeof session.on === 'function') {
+          unsubscribe = atPhaseSync('send_and_wait', () => session.on('session.error', (event) => {
+            if (event?.agentId) return; // not the root planning turn
+            captured = safeSdkErrorData(event?.data);
+          }));
+        }
+        response = await atPhase('send_and_wait', () =>
+          session.sendAndWait({ prompt, responseSchema: PLAN_SCHEMA }, timeoutMs));
+      } catch (error) {
+        sendFailure = error instanceof CopilotPhaseError ? error :
+          new CopilotPhaseError('send_and_wait', error);
+        sendFailure.attachSdkError(captured);
+        throw sendFailure;
+      } finally {
+        try { unsubscribe?.(); } catch (error) {
+          if (!sendFailure) throw new CopilotPhaseError('cleanup', error);
+        }
+      }
       const candidate = atPhaseSync('parse_json', () => {
         const raw = response?.data?.content;
         if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > 8192)

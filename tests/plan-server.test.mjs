@@ -387,6 +387,63 @@ test('safe phase code survives the real connector boundary without provider text
   }
 });
 
+test('official session.error typed fields reach diagnostics without raw event payload', async (t) => {
+  for (const [data, reason] of [
+    [{ errorType: 'authentication', statusCode: 401 }, 'sdk_auth_unavailable'],
+    [{ errorType: 'quota', errorCode: 'billing_not_configured', statusCode: 402 }, 'unknown'],
+    [{ errorType: 'query', statusCode: 400 }, 'unknown'],
+    [{ errorType: 'secret-type', errorCode: 'secret-code', statusCode: 218 }, 'unknown'],
+  ]) {
+    await t.test(data.errorType, async (caseContext) => {
+      const secret = 'fake-private-provider-token';
+      const logs = [], listeners = new Set();
+      const planner = createCopilotPlanner({ model: 'mock', now: () => 1000,
+        maxSnapshotAgeMs: 20_000, maxTickLag: 200,
+        createClient: async () => ({
+          async start() {},
+          async createSession() { return {
+            on(_type, handler) { listeners.add(handler); return () => listeners.delete(handler); },
+            async sendAndWait() {
+              for (const handler of listeners) handler({ type: 'session.error', data: {
+                ...data, message: secret, stack: secret,
+                providerCallId: secret, serviceRequestId: secret, url: secret,
+              } });
+              throw new Error(secret); // matches pinned SDK's generic throw
+            },
+            async disconnect() {},
+          }; },
+          async stop() {},
+        }) });
+      const url = await serve(caseContext, { planNow: () => 1000,
+        planner, log: async (row) => logs.push(row) });
+      const token = await start(url);
+      const response = await json(url, '/plan', { method: 'POST', body: planBody(100, []), token });
+      assert.notEqual(response.status, 200);
+      assert.equal(response.body.failure_stage, 'send_and_wait');
+      assert.equal(response.body.reason_code, reason);
+      assert.equal(response.body.sdk_turn_attempted, true);
+      if (['authentication', 'quota', 'query'].includes(data.errorType)) {
+        assert.equal(response.body.sdk_error_type, data.errorType);
+        assert.equal(response.body.sdk_status, data.statusCode);
+      } else {
+        assert.equal(response.body.sdk_error_type, undefined);
+        assert.equal(response.body.sdk_status, undefined);
+      }
+      if (data.errorType === 'quota')
+        assert.equal(response.body.sdk_error_code, 'billing_not_configured');
+      else assert.equal(response.body.sdk_error_code, undefined);
+      assert.equal(logs.at(-1).sdk_error_type, response.body.sdk_error_type);
+      assert.equal(logs.at(-1).failure_stage, 'send_and_wait');
+      assert.equal(listeners.size, 0);
+      const visible = JSON.stringify({ response, logs });
+      assert.ok(!visible.includes(secret));
+      assert.ok(!visible.includes(token));
+      assert.ok(!visible.includes('secret-type'));
+      assert.ok(!visible.includes('secret-code'));
+    });
+  }
+});
+
 test('Stop during asynchronous logging cannot return a stale plan or Jev decision', async (t) => {
   const planLog = deferred(), jevLog = deferred();
   let logCalls = 0;
