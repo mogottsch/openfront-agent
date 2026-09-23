@@ -107,6 +107,22 @@ test("worker canBuild source ref zero is legal, ID opaque, exact internal troop 
   assert.equal(await f.adapter.canExecute(p.candidates[0].id, 0.3), false);
 });
 
+test("fractional live reserve stays exact until 10% integer intent; boat facts may be fractional", async () => {
+  const f = fixture(undefined, { troops: 9624.8 });
+  f.setBoats([{ id: () => 5, isActive: () => true,
+    targetTile: () => 2, troops: () => 74.5 }]);
+  const p = await f.adapter.propose(opts);
+  assert.equal(p.available_troops_internal, 9624.8);
+  assert.deepEqual(p.boats.active_transports,
+    [{ destination_tile: 2, troops_internal: 74.5 }]);
+  const id = p.candidates[0].id;
+  assert.equal(await f.adapter.canExecute(id, 0.1), true);
+  assert.equal(await f.adapter.execute(id, 0.1), true);
+  assert.deepEqual(f.sent, [{ dst: 2, troops: 962 }]);
+  const negative = fixture(undefined, { troops: -0.5 });
+  await assert.rejects(negative.adapter.propose(opts), /Invalid available troops/);
+});
+
 test("hard fraction envelope rejects fabricated values and tribe >20% at both stages", async () => {
   const f = fixture(undefined, { targetType: "BOT" });
   const site = await first(f);

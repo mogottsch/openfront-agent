@@ -114,8 +114,8 @@ export function createNavalAdapter({ game, read, sendBoat, transportUnit }) {
         destination_tile: typeof unit.targetTile === "function" &&
             validTile(game, unit.targetTile()) ? unit.targetTile() : null,
         troops_internal: typeof unit.troops === "function" &&
-            Number.isSafeInteger(unit.troops()) && unit.troops() >= 0 ?
-              unit.troops() : null,
+            Number.isFinite(unit.troops()) && unit.troops() >= 0 &&
+            unit.troops() <= Number.MAX_SAFE_INTEGER ? unit.troops() : null,
       })) ?? [],
     };
   }
@@ -129,7 +129,10 @@ export function createNavalAdapter({ game, read, sendBoat, transportUnit }) {
   function troopsFor(snapshot, fraction, type) {
     if (!allowedFraction(fraction, type)) return null;
     const available = snapshot.me.troops?.(); // internal game units, not /10 display
-    if (!Number.isSafeInteger(available) || available < 0) return null;
+    // PlayerView forwards a floating internal troop pool (growth/attrition
+    // can yield e.g. 9624.8). Only the emitted intent amount is integer.
+    if (!Number.isFinite(available) || available < 0 ||
+        available > Number.MAX_SAFE_INTEGER) return null;
     const troops = Math.floor(available * fraction);
     return Number.isSafeInteger(troops) && troops >= 1 ?
       { available, troops } : null;
@@ -274,7 +277,8 @@ export function createNavalAdapter({ game, read, sendBoat, transportUnit }) {
         }
         const boats = fleet(snapshot);
         const availableTroops = me.troops?.();
-        if (!Number.isSafeInteger(availableTroops) || availableTroops < 0) {
+        if (!Number.isFinite(availableTroops) || availableTroops < 0 ||
+            availableTroops > Number.MAX_SAFE_INTEGER) {
           throw new Error("Invalid available troops");
         }
         proposal = { ...snapshot, snapshot_id: spatial.snapshot_id, offered };
