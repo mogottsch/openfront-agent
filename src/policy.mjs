@@ -7,7 +7,7 @@ import {
   MAX_ACTIONS,
 } from "../web/observation.js";
 export { validateObservation, OBSERVATION_ERROR };
-export const POLICY_VERSION = "land-strategy-v4.1";
+export const POLICY_VERSION = "land-strategy-v4.2";
 
 export function buildRequest(observation, model = "jev-latest") {
   const clean = validateObservation(observation);
@@ -19,7 +19,7 @@ export function buildRequest(observation, model = "jev-latest") {
         type: "choice",
         instructions: [
           "Choose one action in OpenFront. Gain territory and conquest gold while preserving a growing army. Do not exhaust the available reserve just to keep expanding.",
-          "Wilderness normally comes before untouched tribes, but available wilderness is NOT an instruction to attack on every decision. When reserves are depleted or self.wilderness_attack_active is true, wait and let troops rebuild rather than continually refilling the push. With healthy reserves and no active wilderness push, resume modest expansion instead of idling. Compare the remaining reserve shown for each option; an attack percentage is a commitment, not a reserve target.",
+          "Wilderness normally comes before untouched tribes, but available wilderness is NOT an instruction to attack every decision. If reserves are depleted, wait to regrow. An active wilderness push is NOT an automatic reason to wait: compare its remaining troops against our available reserve using self.active_wilderness_attack_to_available_reserve_ratio. If that push is only a tiny tail and reserves have recovered, consider another modest wilderness send to keep gaining land. If it is already strong relative to reserves, or a new send would drain home defense, wait rather than repeatedly topping it up. Compare the actual post-send reserve in each option; an attack percentage is a commitment, not a reserve target.",
           "The main exception is a tribe already being attacked by OTHER humans or nations: almost always try to take its conquest gold when this does not endanger us. Use neighbors[].attacked_by_other_humans_or_nations. Our own attack, retreating forces, and attacks by other tribes do not qualify.",
           "Once wilderness is unavailable, farm weak tribes when we can afford a useful attack. Do not wait forever with a healthy army and an easy tribe available. Against tribes use only a small commitment, at most twenty percent; otherwise wait and regrow. Do not blindly reinforce an already-funded attack on that tribe.",
           "Under attack, usually absorb until our available reserve is stronger than the attacker's reserve PLUS its active incoming force. Use attackers[].our_reserve_is_stronger, which includes that incoming force. Preserve home defense; do not full-send or chain large sends. Consider all incoming pressure, not just one favorable comparison. Do not assume that another player will rescue us.",

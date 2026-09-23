@@ -56,7 +56,7 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
     buildRequest(observation()).questions.action.instructions.join(" ");
   assert.match(
     text,
-    /Wilderness normally comes before untouched tribes, but available wilderness is NOT an instruction to attack on every decision/,
+    /Wilderness normally comes before untouched tribes, but available wilderness is NOT an instruction to attack every decision/,
   );
   assert.match(text, /other humans or nations/i);
   assert.match(text, /at most twenty percent/);
@@ -64,13 +64,17 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
   assert.match(text, /our_reserve_is_stronger/);
   assert.match(text, /do not full-send or chain large sends/i);
   assert.match(text, /reserve target/);
+  assert.match(
+    text,
+    /active wilderness push is NOT an automatic reason to wait/,
+  );
   assert.match(text, /No city-defense or encirclement strategy is assumed/);
   assert.doesNotMatch(text, /roughly 30%/);
   assert.doesNotMatch(
     text,
     /31\.6|35\.3|once per second|every second|polling|1\.25|1\.7/,
   );
-  assert.equal(POLICY_VERSION, "land-strategy-v4.1");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.2");
 });
 
 test("accepts zero troops and reserves temporarily above capacity", () => {

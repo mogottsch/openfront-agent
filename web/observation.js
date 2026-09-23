@@ -203,6 +203,10 @@ export function modelState(observation) {
       active_incoming_troops: incomingFrom(),
       committed_outgoing_troops: sum(o.outgoing_attacks),
       active_wilderness_attack_troops: wildernessTroops,
+      active_wilderness_attack_to_available_reserve_ratio: ratio(
+        wildernessTroops,
+        o.self.troops,
+      ),
       wilderness_attack_active: wildernessTroops > 0,
     },
     border: {

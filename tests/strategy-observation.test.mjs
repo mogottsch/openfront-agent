@@ -83,6 +83,10 @@ test("outgoing commitments are exposed and mapped to the correct target", () => 
   assert.equal(s.self.committed_outgoing_troops, 1000);
   assert.equal(s.self.wilderness_attack_active, true);
   assert.equal(s.self.active_wilderness_attack_troops, 300);
+  assert.equal(
+    s.self.active_wilderness_attack_to_available_reserve_ratio,
+    0.12,
+  );
   assert.equal(s.neighbors[0].our_active_attack_troops, 500);
   assert.deepEqual(s.outgoing_attacks, o.outgoing_attacks);
 });
@@ -100,6 +104,15 @@ test("wilderness commitments describe the actual post-send reserve", () => {
     1.54,
   );
   assert.equal(modelState(o).self.wilderness_attack_active, true);
+  assert.equal(
+    modelState(o).self.active_wilderness_attack_to_available_reserve_ratio,
+    2.1239,
+  );
+  o.self.troops = 0;
+  assert.equal(
+    modelState(o).self.active_wilderness_attack_to_available_reserve_ratio,
+    null,
+  );
   o.outgoing_attacks[0].retreating = true;
   assert.equal(modelState(o).self.wilderness_attack_active, false);
 });
