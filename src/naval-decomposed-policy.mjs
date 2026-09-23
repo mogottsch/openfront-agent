@@ -7,7 +7,7 @@ import { parseDecision } from "./policy.mjs";
 import { validateHybridInput } from "../web/hybrid-observation.js";
 
 export const NAVAL_DECOMPOSED_POLICY_VERSION =
-  "hybrid-boat-target-size-probe-v1";
+  "hybrid-boat-target-size-probe-v1.1-island";
 
 export function buildNavalDecomposedRequest(input, model = "jev-latest") {
   const clean = validateHybridInput(input);
@@ -60,7 +60,7 @@ export function buildNavalDecomposedRequest(input, model = "jev-latest") {
           geometric_shore_separation: c.water_span_estimate_tiles,
           known_fleet: base.state.naval.fleet,
           question:
-            "Is this trip worth a modest or larger commitment now, while preserving survival at home? Route, landing and later combat are not guaranteed.",
+            "If land expansion is exhausted, reserves have regrown, no attack threatens us and no boat is active, a modest positive send toward this worker-confirmed-source coast may establish a foothold. Preserve a usable home army; wait if the trip is genuinely unsafe. A launch does not guarantee route, landing or conquest.",
         },
         "Sizes are percentages of current available troops, not a capacity target. Tribes cannot receive more than 20%; do not blindly reinforce an existing transport. A wait means send nothing.",
       ],
@@ -73,7 +73,7 @@ export function buildNavalDecomposedRequest(input, model = "jev-latest") {
     type: "choice",
     instructions: [
       "Premise: IF boat_attack is chosen, select ONE of these worker-confirmed launch destinations or wait. A geometry candidate is not a guarantee of sea route, landfall, conquest or safety.",
-      "Compare offered target region size and geometric shore separation; the latter is Manhattan distance, NOT computed water-path length. Existing boats and home reserves matter. No target has been silently chosen by code.",
+      "If there is no land expansion, our available reserve has regrown, no attack threatens us and no boat is active, leaving the island usually needs a modest coastal attempt. Consider a nearby worker-confirmed-source wilderness coast rather than waiting indefinitely. If reserves are depleted, a boat is already funded, or pressure threatens home, wait. Compare region size and geometric shore separation (Manhattan estimate, NOT computed water-path length); code does not choose the target.",
       "Troop percentage will be a separate, independent Choice specifically for the selected target. Returning wait at either stage means no boat intent.",
     ],
     criteria: targets,
