@@ -11,6 +11,58 @@ import {
 } from "./Transport";
 import { GameView } from "./view/GameView";
 
+// Pure, testable intent envelope. Only attachWildernessAgent invokes it in
+// production, after the strict local-dev/solo guard below. The adapters own
+// the stronger worker legality, candidate and snapshot checks.
+export function createGuardedIntentSenders(
+  game: GameView,
+  events: EventBus,
+  read: () => { ready: boolean; ended: boolean },
+) {
+  const sendAttack = (targetID: string | null, troops: number) => {
+    const state = read();
+    if (!state.ready || state.ended || !Number.isFinite(troops) || troops < 1)
+      return false;
+    events.emit(new SendAttackIntentEvent(targetID, troops));
+    return true;
+  };
+  const sendBuild = (unit: UnitType, tile: TileRef) => {
+    const state = read();
+    if (
+      !state.ready ||
+      state.ended ||
+      unit !== UnitType.City ||
+      !Number.isInteger(tile) ||
+      !game.isValidRef(tile)
+    )
+      return false;
+    events.emit(new BuildUnitIntentEvent(unit, tile));
+    return true;
+  };
+  const sendBoat = (dst: TileRef, troops: number) => {
+    const state = read();
+    const player = game.myPlayer();
+    if (
+      !state.ready ||
+      state.ended ||
+      !player ||
+      !Number.isInteger(dst) ||
+      !game.isValidRef(dst) ||
+      !game.isLand(dst) ||
+      game.isImpassable(dst) ||
+      game.ownerID(dst) === player.smallID() ||
+      !Number.isSafeInteger(troops) ||
+      troops < 1 ||
+      !Number.isFinite(player.troops()) ||
+      troops > player.troops()
+    )
+      return false;
+    events.emit(new SendBoatAttackIntentEvent(dst, troops));
+    return true;
+  };
+  return { sendAttack, sendBuild, sendBoat };
+}
+
 export function attachWildernessAgent(
   game: GameView,
   events: EventBus,
@@ -49,49 +101,11 @@ export function attachWildernessAgent(
         (!!player?.hasSpawned() && !player.isAlive()),
     };
   };
-  const sendAttack = (targetID: string | null, troops: number) => {
-    const state = read();
-    if (!state.ready || state.ended || !Number.isFinite(troops) || troops < 1)
-      return false;
-    events.emit(new SendAttackIntentEvent(targetID, troops));
-    return true;
-  };
-  // This bridge only exposes the City build intent. The still-proposed
-  // building adapter must recheck the real worker and gold before invoking it.
-  const sendBuild = (unit: UnitType, tile: TileRef) => {
-    const state = read();
-    if (
-      !state.ready ||
-      state.ended ||
-      unit !== UnitType.City ||
-      !Number.isInteger(tile) ||
-      !game.isValidRef(tile)
-    )
-      return false;
-    events.emit(new BuildUnitIntentEvent(unit, tile));
-    return true;
-  };
-  // The naval adapter will verify transport buildability, target ownership,
-  // boat cap and current reserve before using this ordinary intent path.
-  const sendBoat = (dst: TileRef, troops: number) => {
-    const state = read();
-    const player = game.myPlayer();
-    if (
-      !state.ready ||
-      state.ended ||
-      !player ||
-      !Number.isInteger(dst) ||
-      !game.isValidRef(dst) ||
-      !game.isLand(dst) ||
-      game.isImpassable(dst) ||
-      game.ownerID(dst) === player.smallID() ||
-      !Number.isFinite(troops) ||
-      troops < 1
-    )
-      return false;
-    events.emit(new SendBoatAttackIntentEvent(dst, troops));
-    return true;
-  };
+  const { sendAttack, sendBuild, sendBoat } = createGuardedIntentSenders(
+    game,
+    events,
+    read,
+  );
   const url = "http://127.0.0.1:8788/agent.js";
   void import(/* @vite-ignore */ url)
     .then((module) => {
