@@ -4,9 +4,10 @@ import {
   modelState,
   validateObservation,
   OBSERVATION_ERROR,
+  MAX_ACTIONS,
 } from "../web/observation.js";
 export { validateObservation, OBSERVATION_ERROR };
-export const POLICY_VERSION = "land-observation-v3";
+export const POLICY_VERSION = "land-strategy-v4.1";
 
 export function buildRequest(observation, model = "jev-latest") {
   const clean = validateObservation(observation);
@@ -17,11 +18,12 @@ export function buildRequest(observation, model = "jev-latest") {
       action: {
         type: "choice",
         instructions: [
-          "Choose our next available action in OpenFront, a territorial strategy game. The goal is to survive and gain territory.",
-          "The state describes us, our borders, directly bordering players, and land attacks incoming to us. All troop counts use display units. Troops are currently available reserves; capacity is the maximum reserve, not additional troops.",
-          "Border shares count cardinal tile edges, not distinct tiles. Player IDs link neighbors and incoming attacks. Retreating incoming attacks are listed separately from the active-incoming total.",
-          "The options describe the available land attacks and their estimated commitments at this snapshot. Strength ratios compare the proposed attacking force with the target's available troops, not our whole army. A null ratio means wilderness has no defending player or the denominator is zero.",
-          "Waiting sends no new order; existing attacks and the game continue. No history or other game state is provided.",
+          "Choose one action in OpenFront. Gain territory and conquest gold while preserving a growing army. Do not exhaust the available reserve just to keep expanding.",
+          "Wilderness normally comes before untouched tribes, but available wilderness is NOT an instruction to attack on every decision. When reserves are depleted or self.wilderness_attack_active is true, wait and let troops rebuild rather than continually refilling the push. With healthy reserves and no active wilderness push, resume modest expansion instead of idling. Compare the remaining reserve shown for each option; an attack percentage is a commitment, not a reserve target.",
+          "The main exception is a tribe already being attacked by OTHER humans or nations: almost always try to take its conquest gold when this does not endanger us. Use neighbors[].attacked_by_other_humans_or_nations. Our own attack, retreating forces, and attacks by other tribes do not qualify.",
+          "Once wilderness is unavailable, farm weak tribes when we can afford a useful attack. Do not wait forever with a healthy army and an easy tribe available. Against tribes use only a small commitment, at most twenty percent; otherwise wait and regrow. Do not blindly reinforce an already-funded attack on that tribe.",
+          "Under attack, usually absorb until our available reserve is stronger than the attacker's reserve PLUS its active incoming force. Use attackers[].our_reserve_is_stronger, which includes that incoming force. Preserve home defense; do not full-send or chain large sends. Consider all incoming pressure, not just one favorable comparison. Do not assume that another player will rescue us.",
+          "Top-level attackers threaten US. A neighbor's attackers target that NEIGHBOR. Outgoing troops are already committed and do not count as available home defense. Waiting leaves current attacks running. Counts use display units; shares/ratios and per-option remaining reserves are already calculated. No city-defense or encirclement strategy is assumed.",
         ],
         criteria: actionCriteria(buildActions(clean)),
       },
@@ -35,7 +37,7 @@ export function parseDecision(response, criteria) {
   const probability = (n) => Number.isFinite(n) && n >= 0 && n <= 1;
   if (
     keys.length === 0 ||
-    keys.length > 255 ||
+    keys.length > MAX_ACTIONS ||
     answer?.type !== "choice" ||
     !Object.hasOwn(criteria, answer.choice) ||
     !probability(answer.confidence) ||

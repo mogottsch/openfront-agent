@@ -20,8 +20,8 @@ export function mount(connection) {
       ol { max-height:190px; overflow:auto; padding-left:22px; font-size:12px; } li { padding:4px 0; border-bottom:1px solid #ffffff18; white-space:pre-wrap; overflow-wrap:anywhere; }
     </style>
     <section>
-      <h2>Jev · land actions</h2>
-      <small>Borders, neighbors, incoming attacks.<br>Wait or attack a legal target with 10% / 20%.<br>No prescribed strategy. Local solo only.</small>
+      <h2>Jev · land strategy</h2>
+      <small>Wilderness first · tribe gold-steal exception.<br>Tribes: 10% / 20%. Other targets: up to 50%.<br>Preserve growth; incoming force counts. Local solo.</small>
       <div>
         <label>Interval (s) <input id="interval" aria-label="Decision interval seconds" type="number" min="1" max="30" value="1"></label>
         <label>Calls <input id="limit" aria-label="Request limit" type="number" min="1" max="300" value="30"></label>
@@ -60,7 +60,7 @@ export function mount(connection) {
       if (event.state) {
         const { self, border, neighbors } = event.state;
         $("state").textContent =
-          `Troops ${self.troops}/${self.troop_capacity} (${self.reserve_percent}%)\nBorder: ${Math.round(border.wilderness_share * 100)}% wilderness, ${Math.round(border.player_share * 100)}% players\nNeighbors: ${neighbors.length} · incoming troops: ${self.active_incoming_troops}`;
+          `Troops ${self.troops}/${self.troop_capacity} (${self.reserve_percent}%)\nBorder: ${Math.round(border.wilderness_share * 100)}% wilderness, ${Math.round(border.player_share * 100)}% players\nNeighbors: ${neighbors.length} · incoming: ${self.active_incoming_troops}\nAlready committed: ${self.committed_outgoing_troops}`;
         $("payload").textContent = JSON.stringify(
           { state: event.state, actions: event.actions },
           null,

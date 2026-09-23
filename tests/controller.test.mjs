@@ -58,8 +58,14 @@ for (const [action, expected] of [
   ["wait", []],
   ["attack_wilderness_10", [{ target: null, fraction: 0.1 }]],
   ["attack_wilderness_20", [{ target: null, fraction: 0.2 }]],
+  ["attack_wilderness_30", [{ target: null, fraction: 0.3 }]],
+  ["attack_wilderness_40", [{ target: null, fraction: 0.4 }]],
+  ["attack_wilderness_50", [{ target: null, fraction: 0.5 }]],
   ["attack_player_2_10", [{ target: 2, fraction: 0.1 }]],
   ["attack_player_2_20", [{ target: 2, fraction: 0.2 }]],
+  ["attack_player_2_30", [{ target: 2, fraction: 0.3 }]],
+  ["attack_player_2_40", [{ target: 2, fraction: 0.4 }]],
+  ["attack_player_2_50", [{ target: 2, fraction: 0.5 }]],
 ])
   test(`${action} executes the offered bounded candidate with the complete observation`, async () => {
     const s = setup({ action });
@@ -181,6 +187,8 @@ test("a fabricated target, allied target, or unsupported amount stops without ex
     "attack_player_99_20",
     "attack_player_3_10",
     "attack_wilderness_100",
+    "attack_wilderness_60",
+    "attack_player_2_25",
     "attack_0",
   ]) {
     const s = setup({ action });
@@ -189,6 +197,16 @@ test("a fabricated target, allied target, or unsupported amount stops without ex
     assert.equal(s.controller.running, false);
     assert.deepEqual(s.sent, []);
   }
+});
+
+test("a larger tribe attack returned by a model is rejected, not silently reduced", async () => {
+  const s = setup({ action: "attack_player_2_50" });
+  s.input.neighbors[0].type = "tribe";
+  s.input.incoming_attacks[0].attacker_type = "tribe";
+  s.controller.start();
+  await setImmediate();
+  assert.deepEqual(s.sent, []);
+  assert.equal(s.controller.running, false);
 });
 
 test("a target becoming illegal during inference is not replaced with another target", async () => {

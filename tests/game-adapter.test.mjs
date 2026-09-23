@@ -64,6 +64,7 @@ function fixture() {
           ),
         ),
       }),
+      outgoingAttacks: () => [],
       incomingAttacks: () =>
         id === 1
           ? [{ id: "a1", attackerID: 2, troops: 1234, retreating: false }]
@@ -149,6 +150,94 @@ test("legal player attack translates smallID to current game ID and uses current
   assert.equal(f.adapter.execute(action), true);
   assert.deepEqual(f.sent, [{ target: "player-2", troops: 6000 }]);
   assert.equal(f.adapter.execute(action), false);
+});
+
+for (const fraction of [0.3, 0.4, 0.5]) {
+  for (const target_id of [null, 2]) {
+    test(`${fraction * 100}% executes against ${target_id ?? "wilderness"} using the current internal pool`, async () => {
+      const f = fixture();
+      if (target_id !== null) f.players.get(target_id).type = () => "NATION";
+      const action = { kind: "attack", target_id, fraction };
+      assert.equal(await f.adapter.canExecute(action), true);
+      assert.equal(f.adapter.execute(action), true);
+      assert.deepEqual(f.sent, [
+        {
+          target: target_id === null ? null : "player-2",
+          troops: Math.floor(25000 * fraction),
+        },
+      ]);
+    });
+  }
+}
+
+test("tribe amounts above 20% are rejected even if a caller invents a larger action", async () => {
+  const f = fixture();
+  for (const fraction of [0.3, 0.4, 0.5])
+    assert.equal(
+      await f.adapter.canExecute({ kind: "attack", target_id: 2, fraction }),
+      false,
+    );
+  assert.equal(f.checks.length, 0);
+  assert.equal(f.sent.length, 0);
+});
+
+test("execution rechecks the tribe ceiling against the real target type", async () => {
+  const f = fixture();
+  f.players.get(2).type = () => "NATION";
+  const action = { kind: "attack", target_id: 2, fraction: 0.5 };
+  assert.equal(await f.adapter.canExecute(action), true);
+  f.players.get(2).type = () => "BOT";
+  assert.equal(f.adapter.execute(action), false);
+  assert.equal(f.sent.length, 0);
+});
+
+test("captures other players attacking a neighbor and our existing commitments", async () => {
+  const f = fixture();
+  f.players.get(3).type = () => "NATION";
+  const mine = {
+    id: "mine",
+    attackerID: 1,
+    targetID: 2,
+    troops: 3000,
+    retreating: false,
+  };
+  f.players.get(1).outgoingAttacks = () => [mine];
+  f.players.get(2).incomingAttacks = () => [
+    mine,
+    {
+      id: "theirs",
+      attackerID: 3,
+      targetID: 2,
+      troops: 5000,
+      retreating: false,
+    },
+  ];
+  const snapshot = await f.adapter.observe();
+  assert.equal(
+    snapshot.observation.neighbors[0].incoming_attacks[1].attacker_type,
+    "nation",
+  );
+  assert.equal(
+    snapshot.observation.neighbors[0].incoming_attacks[1]
+      .attacker_reserve_troops,
+    1000,
+  );
+  assert.deepEqual(snapshot.observation.outgoing_attacks, [
+    { id: "mine", target_id: 2, troops: 300, retreating: false },
+  ]);
+  assert.doesNotThrow(() => validateObservation(snapshot.observation));
+});
+
+test("percentages outside the approved increments are rejected before a worker query", async () => {
+  const f = fixture();
+  for (const fraction of [-0.1, 0, 0.25, 0.6, 1, NaN]) {
+    assert.equal(
+      await f.adapter.canExecute({ kind: "attack", target_id: 2, fraction }),
+      false,
+    );
+  }
+  assert.equal(f.checks.length, 0);
+  assert.equal(f.sent.length, 0);
 });
 
 test("wilderness uses a null target and 10% of the current internal pool", async () => {

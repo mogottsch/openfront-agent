@@ -1,6 +1,6 @@
 # Land observations and dynamic actions (v3)
 
-2026-09-20 · policy `land-observation-v3` · OpenFront `bb8af015b`.
+2026-09-20 · historical neutral policy `land-observation-v3.1` · OpenFront `bb8af015b`. V3.1 expands commitments to 10/20/30/40/50%; observations and neutral prompt instructions are unchanged. Historical live results below used v3's 10/20% menu. Current local experiment is `land-strategy-v4.1`: additional incoming/outgoing attack records, hard tribe ≤20% ceiling and reviewed land instructions (see [strategy review](strategy-review.html)). The JSON examples below describe the older neutral version, **not** the current v4.1 input schema.
 
 ## Experiment scope
 
@@ -83,23 +83,29 @@ Relationships are teammate, ally or unallied; unallied is not a claim about a na
 
 ## Action contract
 
-The example produces five choices:
+The example now produces eleven choices:
 
 ```text
 wait
 attack_wilderness_10
 attack_wilderness_20
+attack_wilderness_30
+attack_wilderness_40
+attack_wilderness_50
 attack_player_2_10
 attack_player_2_20
+attack_player_2_30
+attack_player_2_40
+attack_player_2_50
 ```
 
-Player 3 is an ally and receives no attack choices. With no wilderness, the two wilderness choices disappear. If a player is immune or otherwise not attackable, their choices disappear. If the available pool cannot fund even one internal troop, that attack option is omitted. The former `attack_0` duplicate is collapsed into wait.
+Player 3 is an ally and receives no attack choices. With no wilderness, the five wilderness choices disappear. If a player is immune or otherwise not attackable, their choices disappear. If the available pool cannot fund even one internal troop, that attack option is omitted. The former `attack_0` duplicate is collapsed into wait.
 
 Each attack's criterion describes its target, percentage of **available troops**, estimated commitment, estimated remaining reserve, and committed-force/defender ratio. In the example, attacking player 2 with 20% means an estimated 500 troops, leaving 2000; the comparison ratio is 0.5, **not** the whole-army ratio of 2.5. The ratio is null for wilderness or a zero defender pool.
 
 Candidate estimates describe the snapshot. At execution, the chosen percentage is applied to the then-current internal troop pool. The model cannot invent another target, arbitrary coordinates, a larger percentage, a boat, or a building.
 
-Bounds are explicit: up to 126 neighbors (wait + two wilderness + 252 player options = 255, the TypeSafe Choice limit), 256 incoming attack records, and 64 KiB raw HTTP bodies. Oversized states fail; no silent top-k selection hides neighbors.
+Bounds are explicit: up to 126 observed neighbors, 256 incoming attack records, and 64 KiB raw HTTP bodies. A separate candidate-count guard enforces TypeSafe's 255-option maximum. Five amounts per target permit 50 attack targets including wilderness (251 choices with wait), so 49 attackable players fit when wilderness is available, or 50 without wilderness. Non-attackable neighbors consume observation space but no action slots. Oversized states or candidate sets fail; no silent top-k selection hides neighbors.
 
 ## Freshness, legality, and no-op behavior
 

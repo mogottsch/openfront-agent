@@ -35,8 +35,14 @@ test("request includes border/neighbor facts and exactly the legal target-size o
     "wait",
     "attack_wilderness_10",
     "attack_wilderness_20",
+    "attack_wilderness_30",
+    "attack_wilderness_40",
+    "attack_wilderness_50",
     "attack_player_2_10",
     "attack_player_2_20",
+    "attack_player_2_30",
+    "attack_player_2_40",
+    "attack_player_2_50",
   ]);
   assert.equal(
     request.questions.action.criteria.attack_player_2_20
@@ -45,14 +51,26 @@ test("request includes border/neighbor facts and exactly the legal target-size o
   );
 });
 
-test("prompt supplies only a goal and field/action semantics, not a tactical policy or cadence", () => {
-  const question = buildRequest(observation()).questions.action;
-  assert.match(question.instructions.join(" "), /survive and gain territory/);
-  assert.doesNotMatch(
-    JSON.stringify(question),
-    /30%|31\.6|35\.3|growth peak|reserve target|prefer wilderness|second|interval|poll|latency|timer/i,
+test("prompt encodes the reviewed priorities and combined-force defense, not harness cadence", () => {
+  const text =
+    buildRequest(observation()).questions.action.instructions.join(" ");
+  assert.match(
+    text,
+    /Wilderness normally comes before untouched tribes, but available wilderness is NOT an instruction to attack on every decision/,
   );
-  assert.equal(POLICY_VERSION, "land-observation-v3");
+  assert.match(text, /other humans or nations/i);
+  assert.match(text, /at most twenty percent/);
+  assert.match(text, /attacker's reserve PLUS its active incoming force/);
+  assert.match(text, /our_reserve_is_stronger/);
+  assert.match(text, /do not full-send or chain large sends/i);
+  assert.match(text, /reserve target/);
+  assert.match(text, /No city-defense or encirclement strategy is assumed/);
+  assert.doesNotMatch(text, /roughly 30%/);
+  assert.doesNotMatch(
+    text,
+    /31\.6|35\.3|once per second|every second|polling|1\.25|1\.7/,
+  );
+  assert.equal(POLICY_VERSION, "land-strategy-v4.1");
 });
 
 test("accepts zero troops and reserves temporarily above capacity", () => {
@@ -215,6 +233,29 @@ test("rejects foreign origins, malformed observations, and untrusted hosts befor
   });
   assert.equal(hostStatus, 403);
   assert.equal(calls, 0);
+});
+
+test("excess candidates are rejected before inference without leaving the server busy", async (t) => {
+  let calls = 0;
+  const url = await serve(t, {
+    apiKey: "fake",
+    fetchImpl: async () => {
+      calls++;
+      return new Response(JSON.stringify(response()));
+    },
+  });
+  const o = observation();
+  o.neighbors = Array.from({ length: 50 }, (_, i) => ({
+    ...o.neighbors[0],
+    id: i + 2,
+    shared_border_edges: 1,
+  }));
+  o.border.player_edges = 50;
+  o.border.total_edges = 62;
+  assert.equal((await post(url, o)).status, 400);
+  assert.equal(calls, 0);
+  assert.equal((await post(url, observation())).status, 200);
+  assert.equal(calls, 1);
 });
 
 test("upstream errors are bounded and contain no upstream body or key", async (t) => {

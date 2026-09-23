@@ -1,8 +1,14 @@
-// Shared by browser and sidecar. Derived values and legal candidates are code,
-// not a strategy: none of these helpers chooses an action.
-export const MAX_NEIGHBORS = 126; // wait + 2 wilderness + 2 per neighbor <= 255
+// Shared facts, arithmetic and explicit action limits. No helper chooses Jev's action.
+export const MAX_NEIGHBORS = 126;
+export const MAX_ACTIONS = 255;
+export const MAX_ATTACK_RECORDS = 256;
+export const ATTACK_FRACTIONS = Object.freeze([0.1, 0.2, 0.3, 0.4, 0.5]);
+export const TRIBE_ATTACK_FRACTIONS = Object.freeze([0.1, 0.2]);
+export const fractionsForTarget = (type) =>
+  type === "tribe" ? TRIBE_ATTACK_FRACTIONS : ATTACK_FRACTIONS;
 export const OBSERVATION_ERROR =
-  "Invalid land observation (self, border, neighbors, incoming_attacks)";
+  "Invalid land observation (self, border, neighbors, incoming_attacks, outgoing_attacks)";
+const TYPES = ["human", "nation", "tribe"];
 const fail = () => {
   throw new Error(OBSERVATION_ERROR);
 };
@@ -16,22 +22,24 @@ const exact = (value, keys) => {
   )
     fail();
 };
-const number = (value, min = 0, max = 1e9) => {
-  if (!Number.isFinite(value) || value < min || value > max) fail();
-};
 const integer = (value, min = 0, max = 1e9) => {
-  number(value, min, max);
-  if (!Number.isInteger(value)) fail();
+  if (!Number.isInteger(value) || value < min || value > max) fail();
 };
-const playerStats = (value) => {
-  integer(value.id, 1, 4095);
-  integer(value.troops);
-  integer(value.troop_capacity, 1);
-  integer(value.territory_tiles);
+const playerStats = (p) => {
+  integer(p.id, 1, 4095);
+  integer(p.troops);
+  integer(p.troop_capacity, 1);
+  integer(p.territory_tiles);
 };
 
 export function validateObservation(value) {
-  exact(value, ["self", "border", "neighbors", "incoming_attacks"]);
+  exact(value, [
+    "self",
+    "border",
+    "neighbors",
+    "incoming_attacks",
+    "outgoing_attacks",
+  ]);
   exact(value.self, ["id", "troops", "troop_capacity", "territory_tiles"]);
   playerStats(value.self);
   const edgeKeys = [
@@ -48,13 +56,63 @@ export function validateObservation(value) {
     edgeKeys.slice(1).reduce((sum, key) => sum + value.border[key], 0)
   )
     fail();
-  if (
-    !Array.isArray(value.neighbors) ||
-    value.neighbors.length > MAX_NEIGHBORS ||
-    !Array.isArray(value.incoming_attacks) ||
-    value.incoming_attacks.length > 256
-  )
+  if (!Array.isArray(value.neighbors) || value.neighbors.length > MAX_NEIGHBORS)
     fail();
+  let attackRecords = 0;
+  const attackerMetadata = new Map();
+  const attackList = (list, targetId, outgoing = false) => {
+    if (!Array.isArray(list)) fail();
+    attackRecords += list.length;
+    if (attackRecords > MAX_ATTACK_RECORDS) fail();
+    const ids = new Set();
+    return list.map((a) => {
+      exact(
+        a,
+        outgoing
+          ? ["id", "target_id", "troops", "retreating"]
+          : [
+              "id",
+              "attacker_id",
+              "attacker_type",
+              "attacker_reserve_troops",
+              "troops",
+              "retreating",
+            ],
+      );
+      if (
+        typeof a.id !== "string" ||
+        !/^[a-zA-Z0-9_-]{1,64}$/.test(a.id) ||
+        ids.has(a.id) ||
+        typeof a.retreating !== "boolean"
+      )
+        fail();
+      ids.add(a.id);
+      integer(a.troops);
+      if (outgoing) {
+        if (a.target_id !== null) integer(a.target_id, 1, 4095);
+        if (a.target_id === value.self.id) fail();
+      } else {
+        integer(a.attacker_id, 1, 4095);
+        integer(a.attacker_reserve_troops);
+        if (a.attacker_id === targetId || !TYPES.includes(a.attacker_type))
+          fail();
+        const previous = attackerMetadata.get(a.attacker_id);
+        if (
+          previous &&
+          (previous.type !== a.attacker_type ||
+            previous.troops !== a.attacker_reserve_troops)
+        )
+          fail();
+        attackerMetadata.set(a.attacker_id, {
+          type: a.attacker_type,
+          troops: a.attacker_reserve_troops,
+        });
+      }
+      return { ...a };
+    });
+  };
+  const incoming = attackList(value.incoming_attacks, value.self.id);
+  const outgoing = attackList(value.outgoing_attacks, null, true);
   const ids = new Set([value.self.id]);
   let sharedEdges = 0;
   const neighbors = value.neighbors.map((n) => {
@@ -67,12 +125,13 @@ export function validateObservation(value) {
       "troop_capacity",
       "territory_tiles",
       "can_attack",
+      "incoming_attacks",
     ]);
     playerStats(n);
     integer(n.shared_border_edges, 1);
     if (
       ids.has(n.id) ||
-      !["human", "nation", "tribe"].includes(n.type) ||
+      !TYPES.includes(n.type) ||
       !["unallied", "ally", "teammate"].includes(n.relationship) ||
       typeof n.can_attack !== "boolean" ||
       (n.can_attack &&
@@ -81,51 +140,71 @@ export function validateObservation(value) {
       fail();
     ids.add(n.id);
     sharedEdges += n.shared_border_edges;
-    return { ...n };
+    return { ...n, incoming_attacks: attackList(n.incoming_attacks, n.id) };
   });
   if (sharedEdges !== value.border.player_edges) fail();
-  const attackIds = new Set();
-  const attacks = value.incoming_attacks.map((a) => {
-    exact(a, ["id", "attacker_id", "troops", "retreating"]);
-    if (
-      typeof a.id !== "string" ||
-      !/^[a-zA-Z0-9_-]{1,64}$/.test(a.id) ||
-      attackIds.has(a.id)
-    )
+  // The same player's reserve must not vary between attack records or disagree
+  // with its simultaneous player snapshot. Reserve is counted once per attacker.
+  for (const p of [{ ...value.self, type: "human" }, ...neighbors]) {
+    const metadata = attackerMetadata.get(p.id);
+    if (metadata && (metadata.type !== p.type || metadata.troops !== p.troops))
       fail();
-    integer(a.attacker_id, 1, 4095);
-    integer(a.troops);
-    if (a.attacker_id === value.self.id || typeof a.retreating !== "boolean")
-      fail();
-    attackIds.add(a.id);
-    return { ...a };
-  });
+  }
   return {
     self: { ...value.self },
     border: { ...value.border },
     neighbors,
-    incoming_attacks: attacks,
+    incoming_attacks: incoming,
+    outgoing_attacks: outgoing,
   };
 }
 
 const round = (n, places = 4) => Number(n.toFixed(places));
 const ratio = (a, b) => (b === 0 ? null : round(a / b));
-const incomingFrom = (o, id) =>
-  o.incoming_attacks
-    .filter((a) => !a.retreating && (id === undefined || a.attacker_id === id))
-    .reduce((sum, a) => sum + a.troops, 0);
+const active = (a) => !a.retreating && a.troops > 0;
+const sum = (list) => list.reduce((total, a) => total + a.troops, 0);
 const stats = (p) => ({
   ...p,
   reserve_percent: round((100 * p.troops) / p.troop_capacity, 2),
   troops_per_tile: ratio(p.troops, p.territory_tiles),
 });
 
+export function groupAttackers(attacks) {
+  const groups = new Map();
+  for (const a of attacks.filter(active)) {
+    const group = groups.get(a.attacker_id) ?? {
+      id: a.attacker_id,
+      type: a.attacker_type,
+      reserve_troops: a.attacker_reserve_troops,
+      attacking_troops: 0,
+    };
+    group.attacking_troops += a.troops;
+    groups.set(a.attacker_id, group);
+  }
+  return [...groups.values()].sort((a, b) => a.id - b.id);
+}
+
 export function modelState(observation) {
   const o = validateObservation(observation);
   const share = (n) =>
     o.border.total_edges === 0 ? 0 : round(n / o.border.total_edges);
+  const incomingFrom = (id) =>
+    sum(
+      o.incoming_attacks.filter(
+        (a) => active(a) && (id === undefined || a.attacker_id === id),
+      ),
+    );
+  const wildernessTroops = sum(
+    o.outgoing_attacks.filter((a) => active(a) && a.target_id === null),
+  );
   return {
-    self: { ...stats(o.self), active_incoming_troops: incomingFrom(o) },
+    self: {
+      ...stats(o.self),
+      active_incoming_troops: incomingFrom(),
+      committed_outgoing_troops: sum(o.outgoing_attacks),
+      active_wilderness_attack_troops: wildernessTroops,
+      wilderness_attack_active: wildernessTroops > 0,
+    },
     border: {
       ...o.border,
       wilderness_share: share(o.border.wilderness_edges),
@@ -133,39 +212,77 @@ export function modelState(observation) {
       water_share: share(o.border.water_edges),
       blocked_share: share(o.border.blocked_edges),
     },
-    neighbors: o.neighbors.map((n) => ({
-      ...stats(n),
-      border_share: share(n.shared_border_edges),
-      troops_attacking_us: incomingFrom(o, n.id),
-    })),
+    neighbors: o.neighbors.map((n) => {
+      const attackers = groupAttackers(n.incoming_attacks);
+      return {
+        ...stats(n),
+        border_share: share(n.shared_border_edges),
+        troops_attacking_us: incomingFrom(n.id),
+        attackers,
+        attacked_by_other_humans_or_nations: attackers.some(
+          (a) =>
+            a.id !== o.self.id && (a.type === "human" || a.type === "nation"),
+        ),
+        our_active_attack_troops: sum(
+          o.outgoing_attacks.filter((a) => active(a) && a.target_id === n.id),
+        ),
+      };
+    }),
+    attackers: groupAttackers(o.incoming_attacks).map((a) => {
+      const total = a.reserve_troops + a.attacking_troops;
+      return {
+        ...a,
+        total_force: total,
+        our_reserve_to_total_force_ratio: ratio(o.self.troops, total),
+        our_reserve_is_stronger: o.self.troops > total,
+      };
+    }),
     incoming_attacks: o.incoming_attacks,
+    outgoing_attacks: o.outgoing_attacks,
   };
 }
 
 export function buildActions(observation) {
   const o = validateObservation(observation);
-  const actions = { wait: { kind: "wait" } };
-  const addTarget = (targetId, targetName, defenderTroops) => {
-    for (const fraction of [0.1, 0.2]) {
+  const actions = {
+    wait: {
+      kind: "wait",
+      troops_remaining_estimate: o.self.troops,
+      reserve_percent_after_estimate: round(
+        (100 * o.self.troops) / o.self.troop_capacity,
+        2,
+      ),
+    },
+  };
+  const addTarget = (targetId, targetName, defenderTroops, type = null) => {
+    for (const fraction of fractionsForTarget(type)) {
       const committed = Math.floor(o.self.troops * 10 * fraction) / 10;
       if (committed < 0.1) continue;
       const id = `attack_${targetName}_${fraction * 100}`;
       actions[id] = {
         kind: "attack",
         target_id: targetId,
+        target_type: type ?? "wilderness",
         fraction,
         troops_committed_estimate: committed,
         troops_remaining_estimate: round(o.self.troops - committed, 1),
+        reserve_percent_after_estimate: round(
+          (100 * (o.self.troops - committed)) / o.self.troop_capacity,
+          2,
+        ),
         committed_to_defender_ratio:
           defenderTroops === null ? null : ratio(committed, defenderTroops),
       };
     }
   };
   if (o.border.wilderness_edges > 0) addTarget(null, "wilderness", null);
-  for (const n of [...o.neighbors].sort((a, b) => a.id - b.id)) {
+  for (const n of [...o.neighbors].sort((a, b) => a.id - b.id))
     if (n.can_attack && n.relationship === "unallied")
-      addTarget(n.id, `player_${n.id}`, n.troops);
-  }
+      addTarget(n.id, `player_${n.id}`, n.troops, n.type);
+  if (Object.keys(actions).length > MAX_ACTIONS)
+    throw new Error(
+      `Too many legal land actions (maximum ${MAX_ACTIONS}); no targets were silently dropped`,
+    );
   return actions;
 }
 
@@ -177,6 +294,8 @@ export function actionCriteria(actions) {
         ? {
             action:
               "Send no new attack. Existing attacks and troop regeneration continue.",
+            troops_remaining_estimate: a.troops_remaining_estimate,
+            reserve_percent_after_estimate: a.reserve_percent_after_estimate,
           }
         : {
             action: "Commit troops to a normal land attack.",
@@ -184,9 +303,11 @@ export function actionCriteria(actions) {
               a.target_id === null
                 ? "unclaimed wilderness"
                 : `neighbor player ${a.target_id}`,
+            target_type: a.target_type,
             percent_of_available_troops: a.fraction * 100,
             troops_committed_estimate: a.troops_committed_estimate,
             troops_remaining_estimate: a.troops_remaining_estimate,
+            reserve_percent_after_estimate: a.reserve_percent_after_estimate,
             committed_to_defender_ratio: a.committed_to_defender_ratio,
           },
     ]),

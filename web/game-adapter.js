@@ -1,5 +1,6 @@
 // GameView adapter: observations only read state; execution emits a normal
 // attack intent through the small TypeScript bridge. No strategy lives here.
+import { ATTACK_FRACTIONS, fractionsForTarget } from "./observation.js";
 
 export function summarizeBorders(game, playerId, borderTiles) {
   const border = {
@@ -64,7 +65,7 @@ const stats = (game, player) => ({
 });
 const validAction = (a) =>
   a?.kind === "attack" &&
-  [0.1, 0.2].includes(a.fraction) &&
+  ATTACK_FRACTIONS.includes(a.fraction) &&
   (a.target_id === null ||
     (Number.isInteger(a.target_id) && a.target_id > 0 && a.target_id <= 4095));
 
@@ -82,15 +83,33 @@ export function createGameAdapter({ game, read, sendAttack }) {
       return null;
     }
   };
-  const eligiblePlayer = (me, id) => {
+  const eligiblePlayer = (me, id, fraction) => {
     const other = targetPlayer(id);
     return other &&
       other.isAlive() &&
       other.smallID() !== me.smallID() &&
-      relation(me, other) === "unallied"
+      relation(me, other) === "unallied" &&
+      (fraction === undefined ||
+        fractionsForTarget(typeName[other.type()]).includes(fraction))
       ? other
       : null;
   };
+  const incoming = (player) =>
+    player.incomingAttacks().map((a) => {
+      const attacker = targetPlayer(a.attackerID);
+      if (!attacker) throw new Error("Attacker snapshot is unavailable");
+      return {
+        id: a.id,
+        attacker_id: a.attackerID,
+        attacker_type: typeName[attacker.type()],
+        attacker_reserve_troops: Math.max(
+          0,
+          Math.floor(attacker.troops() / 10),
+        ),
+        troops: Math.max(0, Math.floor(a.troops / 10)),
+        retreating: a.retreating,
+      };
+    });
   return {
     read,
     async observe() {
@@ -120,11 +139,13 @@ export function createGameAdapter({ game, read, sendAttack }) {
               relationship: relation(me, other),
               shared_border_edges: contact.edges,
               can_attack: false,
+              incoming_attacks: incoming(other),
             };
           }),
-        incoming_attacks: me.incomingAttacks().map((a) => ({
+        incoming_attacks: incoming(me),
+        outgoing_attacks: me.outgoingAttacks().map((a) => ({
           id: a.id,
-          attacker_id: a.attackerID,
+          target_id: a.targetID === 0 ? null : a.targetID,
           troops: Math.max(0, Math.floor(a.troops / 10)),
           retreating: a.retreating,
         })),
@@ -150,7 +171,8 @@ export function createGameAdapter({ game, read, sendAttack }) {
       const me = game.myPlayer();
       if (
         !me ||
-        (action.target_id !== null && !eligiblePlayer(me, action.target_id))
+        (action.target_id !== null &&
+          !eligiblePlayer(me, action.target_id, action.fraction))
       )
         return false;
       const { borderTiles } = await me.borderTiles();
@@ -171,7 +193,8 @@ export function createGameAdapter({ game, read, sendAttack }) {
         !result.canAttack ||
         !read().ready ||
         !matchingTile(candidate, action.target_id) ||
-        (action.target_id !== null && !eligiblePlayer(me, action.target_id))
+        (action.target_id !== null &&
+          !eligiblePlayer(me, action.target_id, action.fraction))
       )
         return false;
       permit = {
@@ -198,7 +221,9 @@ export function createGameAdapter({ game, read, sendAttack }) {
       const me = game.myPlayer();
       if (!me) return false;
       const other =
-        action.target_id === null ? null : eligiblePlayer(me, action.target_id);
+        action.target_id === null
+          ? null
+          : eligiblePlayer(me, action.target_id, action.fraction);
       if (action.target_id !== null && !other) return false;
       const troops = Math.floor(me.troops() * action.fraction);
       if (troops < 1) return false;

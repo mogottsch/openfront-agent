@@ -9,6 +9,7 @@
     "start": "node src/server.mjs",
     "test": "node --test tests/*.test.mjs",
     "install:bridge": "node scripts/install-bridge.mjs",
-    "analyze:opening": "../OpenFrontIO/node_modules/.bin/tsx --tsconfig ../OpenFrontIO/tsconfig.json scripts/analyze-opening.mts"
+    "analyze:opening": "../OpenFrontIO/node_modules/.bin/tsx --tsconfig ../OpenFrontIO/tsconfig.json scripts/analyze-opening.mts",
+    "analyze:combat": "../OpenFrontIO/node_modules/.bin/tsx --tsconfig ../OpenFrontIO/tsconfig.json scripts/analyze-combat.mts"
   }
 }

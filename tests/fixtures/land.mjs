@@ -1,4 +1,8 @@
-export function observation(troops = 2500, troop_capacity = 12000) {
+export function observation(
+  troops = 2500,
+  troop_capacity = 12000,
+  neighborType = "nation",
+) {
   return {
     self: { id: 1, troops, troop_capacity, territory_tiles: 52 },
     border: {
@@ -11,13 +15,14 @@ export function observation(troops = 2500, troop_capacity = 12000) {
     neighbors: [
       {
         id: 2,
-        type: "tribe",
+        type: neighborType,
         relationship: "unallied",
         shared_border_edges: 5,
         troops: 1000,
         troop_capacity: 5000,
         territory_tiles: 100,
         can_attack: true,
+        incoming_attacks: [],
       },
       {
         id: 3,
@@ -28,10 +33,19 @@ export function observation(troops = 2500, troop_capacity = 12000) {
         troop_capacity: 12000,
         territory_tiles: 300,
         can_attack: false,
+        incoming_attacks: [],
       },
     ],
     incoming_attacks: [
-      { id: "incoming1", attacker_id: 2, troops: 100, retreating: false },
+      {
+        id: "incoming1",
+        attacker_id: 2,
+        attacker_type: neighborType,
+        attacker_reserve_troops: 1000,
+        troops: 100,
+        retreating: false,
+      },
     ],
+    outgoing_attacks: [],
   };
 }

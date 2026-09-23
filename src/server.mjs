@@ -85,7 +85,7 @@ export function createAgentServer({
       return send(503, {
         error: "TYPESAFE_AI_API_KEY is not configured on the local server",
       });
-    let observation;
+    let request;
     try {
       const chunks = [];
       let length = 0;
@@ -94,16 +94,18 @@ export function createAgentServer({
         if (length > 65536) return send(413, { error: "Request too large" });
         chunks.push(chunk);
       }
-      observation = validateObservation(
+      const observation = validateObservation(
         JSON.parse(Buffer.concat(chunks).toString()),
       );
+      // Candidate limits can fail even for a valid observation. Reject before
+      // acquiring the single-flight lock, so this cannot strand the server busy.
+      request = buildRequest(observation, model);
     } catch {
       return send(400, { error: OBSERVATION_ERROR });
     }
     if (busy)
       return send(429, { error: "A decision request is already pending" });
     busy = true;
-    const request = buildRequest(observation, model);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     const onClose = () => {

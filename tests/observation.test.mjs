@@ -11,8 +11,20 @@ import { observation } from "./fixtures/land.mjs";
 test("computes border shares, reserves, density, and incoming totals without asking Jev to divide", () => {
   const raw = observation();
   raw.incoming_attacks.push(
-    { id: "retreat", attacker_id: 2, troops: 300, retreating: true },
-    { id: "distant", attacker_id: 99, troops: 50, retreating: false },
+    {
+      ...raw.incoming_attacks[0],
+      id: "retreat",
+      troops: 300,
+      retreating: true,
+    },
+    {
+      id: "distant",
+      attacker_id: 99,
+      attacker_type: "nation",
+      attacker_reserve_troops: 4000,
+      troops: 50,
+      retreating: false,
+    },
   );
   const state = modelState(raw);
   assert.equal(state.self.reserve_percent, 20.83);
@@ -32,9 +44,27 @@ test("only offers adjacent legal targets and estimates the committed force, not 
     "wait",
     "attack_wilderness_10",
     "attack_wilderness_20",
+    "attack_wilderness_30",
+    "attack_wilderness_40",
+    "attack_wilderness_50",
     "attack_player_2_10",
     "attack_player_2_20",
+    "attack_player_2_30",
+    "attack_player_2_40",
+    "attack_player_2_50",
   ]);
+  for (const percentage of [10, 20, 30, 40, 50]) {
+    const a = actions[`attack_player_2_${percentage}`];
+    assert.equal(a.troops_committed_estimate, (2500 * percentage) / 100);
+    assert.equal(
+      a.troops_remaining_estimate,
+      2500 - a.troops_committed_estimate,
+    );
+    assert.equal(
+      a.committed_to_defender_ratio,
+      a.troops_committed_estimate / 1000,
+    );
+  }
   assert.equal(actions.attack_player_2_20.troops_committed_estimate, 500);
   assert.equal(actions.attack_player_2_20.troops_remaining_estimate, 2000);
   assert.equal(actions.attack_player_2_20.committed_to_defender_ratio, 0.5);
@@ -54,6 +84,9 @@ test("a player attack remains available without wilderness; immunity disables th
     "wait",
     "attack_player_2_10",
     "attack_player_2_20",
+    "attack_player_2_30",
+    "attack_player_2_40",
+    "attack_player_2_50",
   ]);
   raw.neighbors[0].can_attack = false;
   assert.deepEqual(Object.keys(buildActions(raw)), ["wait"]);
@@ -63,6 +96,7 @@ test("zero troops only offers wait; zero defenders produces an explicit null rat
   assert.deepEqual(Object.keys(buildActions(observation(0))), ["wait"]);
   const raw = observation();
   raw.neighbors[0].troops = 0;
+  raw.incoming_attacks[0].attacker_reserve_troops = 0;
   assert.equal(
     buildActions(raw).attack_player_2_10.committed_to_defender_ratio,
     null,
@@ -136,16 +170,33 @@ test("rejects missing/extra state, inconsistent borders, duplicate IDs, and frie
     assert.throws(() => validateObservation(o));
 });
 
-test("bounds the candidate count to the TypeSafe limit without silently dropping neighbors", () => {
+test("bounds actual action count without silently dropping neighbors", () => {
   const o = observation();
-  o.neighbors = Array.from({ length: 126 }, (_, i) => ({
-    ...o.neighbors[0],
+  const neighbor = { ...o.neighbors[0], shared_border_edges: 1 };
+  o.neighbors = Array.from({ length: 49 }, (_, i) => ({
+    ...neighbor,
     id: i + 2,
-    shared_border_edges: 1,
+  }));
+  o.border.player_edges = 49;
+  o.border.total_edges = 61;
+  assert.equal(Object.keys(buildActions(o)).length, 251);
+  o.neighbors.push({ ...neighbor, id: 51 });
+  o.border.player_edges++;
+  o.border.total_edges++;
+  assert.doesNotThrow(() => validateObservation(o));
+  assert.throws(() => buildActions(o), /Too many legal land actions/);
+  o.border.total_edges -= o.border.wilderness_edges;
+  o.border.wilderness_edges = 0;
+  assert.equal(Object.keys(buildActions(o)).length, 251);
+  // The observation limit is independent: non-attackable neighbors still fit.
+  o.neighbors = Array.from({ length: 126 }, (_, i) => ({
+    ...neighbor,
+    id: i + 2,
+    can_attack: false,
   }));
   o.border.player_edges = 126;
-  o.border.total_edges = 138;
-  assert.equal(Object.keys(buildActions(o)).length, 255);
-  o.neighbors.push({ ...o.neighbors[0], id: 128 });
+  o.border.total_edges = 130;
+  assert.deepEqual(Object.keys(buildActions(o)), ["wait"]);
+  o.neighbors.push({ ...neighbor, id: 128 });
   assert.throws(() => validateObservation(o));
 });

@@ -1,6 +1,6 @@
-# OpenFront · Jev land-action experiment
+# OpenFront · Jev + Copilot hybrid agent (in development)
 
-A local-solo OpenFront bot using TypeSafe Jev to select bounded land actions. **Current policy: `land-observation-v3`.** It provides a goal (survive and gain territory), field definitions, and action descriptions—**no prescribed reserve target, opening sequence, or tactical strategy**.
+Current playable slice: a local-solo OpenFront bot using TypeSafe Jev to select bounded land actions. **Current experiment: `land-strategy-v4.1`.** Its reviewed land priorities favor growth-preserving wilderness expansion, a 20% tribe ceiling, contested-tribe conquest gold, and patient defense against combined incoming force. This is **not yet a competitive hybrid bot**: spatial building actions and the Copilot strategic planner are separately tested prototypes, not connected to live games. See the [hybrid spatial design](docs/hybrid-agent-design.html) and [primary-source Jev guidance](docs/jev-founder-guidance.md).
 
 ## What Jev sees and can do
 
@@ -8,8 +8,9 @@ The observation describes:
 
 - **Us:** available troops, capacity, territory size, computed reserve percentage and troop density.
 - **Our border:** cardinal edge counts and shares touching wilderness, players, water, or blocked terrain/map boundaries.
-- **Each directly bordering player:** numeric ID, human/nation/tribe type, ally/teammate/unallied relationship, shared border, troops, capacity, territory size, reserve percentage, troop density, troops attacking us, and current attack legality.
-- **Incoming land attacks:** attacker ID, remaining troops, and retreat status, including attackers not currently in the neighbor list.
+- **Each directly bordering player:** numeric ID, human/nation/tribe type, ally/teammate/unallied relationship, shared border, troops, capacity, territory size, reserve percentage, troop density, current attack legality, and attackers currently attacking that neighbor.
+- **Attacks on us:** attacker ID/type/reserve, attacking troops and retreat status, including attackers outside the neighbor list. The attacker comparison counts their home reserve once **plus** all active forces incoming to us.
+- **Outgoing land attacks:** target, troops and retreat status, including whether a wilderness push is already running and how many troops we have committed to a neighboring target.
 
 Code computes ratios rather than asking Jev to do arithmetic. Troop counts are in display units (internal troops / 10, rounded down). The game supplies capacity through `Config.maxTroops(player)`.
 
@@ -19,14 +20,18 @@ A single Choice selects among the current legal candidates:
 wait
 attack_wilderness_10
 attack_wilderness_20
+attack_wilderness_30
+attack_wilderness_40
+attack_wilderness_50
 attack_player_71_10
 attack_player_71_20
-...one pair per legal neighboring target
+...for a legal nation/human target, also attack_player_71_30/_40/_50
+...for a tribe target, only _10/_20
 ```
 
-Wilderness options are absent when there is no adjacent claimable wilderness. Allied, teammate, and currently immune/non-attackable players are not attack candidates. Each attack option includes its estimated troop commitment, remaining reserve, and committed-force/defender-troops ratio. **0% is collapsed into wait** rather than duplicated per target.
+Wilderness options are absent when there is no adjacent claimable wilderness. Allied, teammate, and currently immune/non-attackable players are not attack candidates. Each attack option includes its estimated troop commitment, remaining reserve, reserve percentage after the send, and committed-force/defender-troops ratio. **0% is collapsed into wait** rather than duplicated per target.
 
-The model selects the action. The harness does not substitute a heuristic, prefer a target, or impose the earlier 30% reserve strategy. It checks membership in the offered choices, freshness, and real game legality before emitting a normal attack intent. See [the schema, execution contract, and live results](docs/land-v3.md).
+The model selects the action. The harness does not substitute a heuristic, prefer a target, or impose the earlier 30% reserve strategy. Hard constraints enforce the ≤20% tribe ceiling and current legality. It checks membership in the offered choices, freshness, and real game legality before emitting a normal attack intent. See [the schema, execution contract, and live results](docs/land-v3.md).
 
 ## Run
 
@@ -61,13 +66,13 @@ Open **http://localhost:9000/** in hardware-accelerated Chrome, start a **Solo**
 
 The game-state adapter reads `GameView`, asks the simulation worker for borders and `PlayerActions.canAttack`, and rechecks the selected target immediately before sending. A disappeared border, new alliance, immunity, pause/death, changed validation tick, or stale observation prevents execution; it does not cause a fallback attack on someone else.
 
-- Troops committed are 10% or 20% of the **current internal troop pool at execution time**. Candidate counts are estimates from the earlier observation.
+- Troops committed are 10–50% (in 10-point steps) of the **current internal troop pool at execution time**; tribe targets allow only 10% or 20%, rechecked against the live target type. Candidate counts are estimates from the earlier observation.
 - Snapshot age is bounded by two seconds and 20 simulation ticks, including observation preparation time.
 - Spawn/pause/stalled ticks do not spend API calls. If wait is the only option, the harness polls locally until legal attacks become available (e.g. immunity expires).
 - Stops on death/victory, request cap, API/validation error, hidden tab, or explicit Stop. Teardown aborts pending work; late replies cannot act.
 - No automatic API retries. An aborted request may already have consumed tokens.
 - The model response must name an offered action and provide a valid probability distribution over exactly those options.
-- Explicit bounds: 126 neighbors, 256 incoming attacks, and a 64 KiB raw observation. Oversized observations fail rather than silently dropping targets. The neighbor bound keeps the Choice at or below the API's 255-option limit.
+- Explicit bounds: 126 observed neighbors, 256 total attack records (our incoming/outgoing and neighbors' incoming), and a 64 KiB raw observation. A separate guard rejects more than 255 generated choices. Non-attackable neighbors do not consume action slots. Oversized observations/candidate sets fail rather than silently dropping targets.
 
 ## Files
 
@@ -75,7 +80,7 @@ The game-state adapter reads `GameView`, asks the simulation worker for borders 
 | -------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `web/observation.js`                   | Shared strict schema, computed features, dynamic action candidates                             |
 | `web/game-adapter.js`                  | Border collection, worker legality queries, target-ID mapping and attack execution             |
-| `src/policy.mjs`                       | Minimal goal/semantics prompt and Choice response validation                                   |
+| `src/policy.mjs`                       | Reviewed land-strategy prompt and Choice response validation                                  |
 | `src/server.mjs`                       | Local HTTP service, credentials, TypeSafe calls, pacing and JSONL logging                      |
 | `web/controller.js`                    | Single-flight loop, snapshots, lifecycle, freshness and candidate validation                   |
 | `web/agent.js`                         | In-game controls and input/action/decision inspector                                           |
@@ -86,6 +91,10 @@ The installer changes only a client bridge and five hook lines in `../OpenFrontI
 
 Ignored `logs/decisions-*.jsonl` records the exact model state, prompt, offered candidates, response probabilities, resolved model, usage, upstream start time and latency. These are **inference records, not execution receipts**. The panel separately distinguishes sent intents from no-ops/discarded decisions; final application still belongs to the game's normal simulation.
 
+## Land strategy: implemented experiment, not an evaluated winner
+
+[Moritz's reviewed land priorities](docs/strategy-review.html) are in the v4.1 experiment. It now observes incoming pressure, each neighbor's attackers, outgoing pushes and calculated post-send reserve; terrain and enemy Defense Post coverage are **not** present. The earlier v4 live trace repeatedly selected 30% wilderness attacks and collapsed reserves. A distinct, bounded v4.1 run of 30 real decisions selected seven 10% wilderness attacks, 22 waits and one 10% tribe attack; the available reserve rose from 2.7k to 16.3k. These are model decisions and emitted intents in one local game, not a full-match outcome or proof of causality. `npm run analyze:combat` reproduces controlled passive-tribe sizing cases (real engine, no Jev calls).
+
 ## Checks and experiments
 
 ```bash
@@ -94,6 +103,8 @@ cd ../OpenFrontIO
 npx tsc --noEmit
 npx vitest run tests/client/ClientGameRunnerActions.test.ts tests/client/ClientGameRunnerMessages.test.ts tests/client/LocalServer.test.ts
 ```
+
+The historical v3.1 amount-menu smoke test made five real requests with all five wilderness sizes offered. Jev chose 10% each time; the new 30/40/50% execution paths are covered by adapter/controller tests, not claimed as model-selected live moves in that test. Neutral instructions were checked unchanged byte-for-byte.
 
 The v3 live test included a 30-decision opening and a separate 10-decision continuation after an idle interval. Jev first selected 10% wilderness expansion throughout. In the continuation it waited six times, made one wilderness attack, and selected three 20% attacks on neighboring players. Incoming attacks and changing target availability were present; player attacks were visible in the game. This verifies the expanded integration, not strategic quality. Full conditions and limitations are in [the v3 report](docs/land-v3.md).
 
