@@ -11,6 +11,7 @@ import {
   createTickPacer,
   observeCore,
   recheckCoreAction,
+  startBenchmarkSession,
 } from "./benchmark-jev-observation.mjs";
 
 function integer(s: string, flag: string, max: number) {
@@ -41,7 +42,7 @@ function args(argv: string[]) {
         seed = next();
         if (!/^[A-Za-z0-9_-]{1,64}$/.test(seed)) throw new Error("invalid seed");
         break;
-      case "--max-calls": maxCalls = integer(next(), flag, 360); break;
+      case "--max-calls": maxCalls = integer(next(), flag, 300); break;
       case "--max-ticks": maxTicks = integer(next(), flag, 73000); break;
       case "--minutes": minutes = integer(next(), flag, 120); break;
       case "--output":
@@ -66,8 +67,9 @@ if (cli.mode === "live") {
   });
   if (!health.ok) throw new Error(`Local sidecar health HTTP ${health.status}`);
   sidecar = await health.json();
-  if (sidecar.policy !== POLICY_VERSION || !sidecar.keyConfigured)
-    throw new Error(`Local sidecar policy/key does not match ${POLICY_VERSION}`);
+  if (sidecar.policy !== POLICY_VERSION || !sidecar.keyConfigured ||
+      sidecar.requiresStart !== true || sidecar.sessionActive !== false)
+    throw new Error(`Local sidecar policy/key/Start state does not match ${POLICY_VERSION}`);
 }
 const opts: Options = {
   smoke: true,
@@ -77,7 +79,8 @@ const opts: Options = {
   spawn: [400, 280],
   output: cli.output,
 };
-let totalCalls = 0;
+let totalCalls = 0; // attempted local /decision requests; not verified paid calls
+let successfulResponses = 0;
 const paceTick = createTickPacer();
 const mockFetch = async (_url: string, init: any) => {
   // Exercise JSON request/response and paced transport without a sidecar or
@@ -87,8 +90,18 @@ const mockFetch = async (_url: string, init: any) => {
   const choice = Object.keys(actions).find((id) => id !== "wait") ?? "wait";
   return { ok: true, json: async () => ({ action: choice, model: "mock-first-legal" }) };
 };
-const ask = createPacedDecisionClient({ fetchImpl: cli.mode === "mock" ? mockFetch : fetch });
-const jev = await runBenchmarkMatch(cli.seed, "jev-v4.1", opts, {
+// --live is the explicit local Start. Acquire exactly one server-verifiable
+// session for this match; mock mode makes *no* HTTP call, including /session.
+const session = cli.mode === "live"
+  ? await startBenchmarkSession({ limit: cli.maxCalls }) : null;
+const ask = createPacedDecisionClient({
+  fetchImpl: cli.mode === "mock" ? mockFetch : fetch,
+  sessionHeaders: session?.headers,
+});
+let jev;
+let sessionStopError: string | null = null;
+try {
+jev = await runBenchmarkMatch(cli.seed, "jev-v4.1", opts, {
   paceTick,
   decide: async ({ game, human, second }: any) => {
     const snapshot = observeCore(game, human);
@@ -104,11 +117,13 @@ const jev = await runBenchmarkMatch(cli.seed, "jev-v4.1", opts, {
     let answer;
     try {
       answer = await ask(snapshot.observation);
+      successfulResponses++;
     } catch (error: any) {
       return { stop: "censored-model-error" as const,
         record: { call: cli.mode === "live" ? "sidecar" : "mock",
           observation: snapshot.observation, candidates,
-          error: error?.message ?? "Decision failed" } };
+          error: /^Local decision HTTP \d+$/.test(error?.message)
+            ? error.message : "Decision failed or timed out" } };
     }
     // A sidecar 200 is a model response only in --live. Validate returned ID
     // against *this* turn's offered candidates, then recheck real core rules.
@@ -139,6 +154,18 @@ const jev = await runBenchmarkMatch(cli.seed, "jev-v4.1", opts, {
     };
   },
 });
+} finally {
+  if (session) {
+    try {
+      await session.stop();
+    } catch (error: any) {
+      // No token in console or report. Stop failure is explicit, not a win.
+      sessionStopError = /^Local session Stop HTTP \d+$/.test(error?.message)
+        ? error.message : "Local session Stop failed";
+      console.error(sessionStopError);
+    }
+  }
+}
 // Pair the identical seed/spawn/opponents at the *same observed live tick*
 // horizon. Short/call-capped matches remain censored; no invented win count.
 const baseline = await runBenchmarkMatch(cli.seed, "fixed20-wilderness", {
@@ -151,12 +178,17 @@ const report = {
   engineCommit: execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   policy: POLICY_VERSION,
   mode: cli.mode,
-  sidecar: cli.mode === "live" ? { model: sidecar.model, policy: sidecar.policy } : null,
+  sidecar: cli.mode === "live" ? { model: sidecar.model, policy: sidecar.policy,
+    sessionRevoked: sessionStopError === null, sessionStopError } : null,
   config: { seed: cli.seed, map: "Onion", difficulty: "Impossible",
     timerMinutes: cli.minutes, maxLiveTicks: cli.maxTicks, maxCalls: cli.maxCalls,
     tickPacingMs: 100, requestStartSpacingMs: 1000, sidecarTimeoutMs: 6500 },
   calls: { sidecar: cli.mode === "live" ? totalCalls : 0,
-    mock: cli.mode === "mock" ? totalCalls : 0 },
+    mock: cli.mode === "mock" ? totalCalls : 0,
+    successfulSidecarResponses: cli.mode === "live" ? successfulResponses : 0,
+    // The local server can reject an attempt before inference; its private
+    // JSONL is needed to verify paid calls, not this harness counter.
+    sidecarCountMeans: "local POST attempts, not verified paid TypeSafe calls" },
   jev, baseline,
   pair: {
     completed: jev.completed && baseline.completed,
@@ -169,7 +201,8 @@ await mkdir(dirname(resolve(cli.output)), { recursive: true });
 await writeFile(cli.output, JSON.stringify(report, null, 2) + "\n");
 console.log(`${cli.mode}: ${totalCalls} calls, Jev ${jev.status}, ` +
   `baseline ${baseline.status}, human tiles ${jev.human.tiles}/${baseline.human.tiles}; ${cli.output}`);
-if (jev.status === "censored-model-error" || (cli.mode === "live" && jev.status !== "engine-win")) {
+if (sessionStopError || jev.status === "censored-model-error" ||
+    (cli.mode === "live" && jev.status !== "engine-win")) {
   // A real capped/failed run is evidence only of decisions and intents, not a
   // complete-match outcome. Keep it saved, but make the CLI unmistakable.
   process.exitCode = 2;

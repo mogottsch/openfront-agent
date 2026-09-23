@@ -2,11 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { modelState } from "../web/observation.js";
 import { createGameAdapter } from "../web/game-adapter.js";
+import { createAgentServer } from "../src/server.mjs";
+import { buildRequest } from "../src/policy.mjs";
 import {
   createPacedDecisionClient,
   createTickPacer,
   observeCore,
   recheckCoreAction,
+  startBenchmarkSession,
 } from "../scripts/benchmark-jev-observation.mjs";
 
 function fixture() {
@@ -196,6 +199,113 @@ test("early timer wakeups cannot issue a sidecar request before 1s", async () =>
   for (let i = 1; i < starts.length; i++)
     assert.ok(starts[i] - starts[i - 1] >= 1000, `call ${i} was too early`);
   assert.ok(starts[2] - starts[1] > 2000);
+});
+
+test("explicit benchmark Start authenticates each decision and revokes once without serializing token", async () => {
+  const secret = "A".repeat(32);
+  const events = [];
+  const fetchImpl = async (url, init) => {
+    events.push({ path: new URL(url).pathname, method: init.method, headers: init.headers });
+    if (init.method === "POST" && url.endsWith("/session")) {
+      assert.deepEqual(JSON.parse(init.body), { mode: "benchmark", limit: 2 });
+      assert.equal(init.headers["X-Agent-Session"], undefined);
+      return { ok: true, json: async () => ({ token: secret, mode: "benchmark", limit: 2, expires_in_ms: 900000 }) };
+    }
+    if (url.endsWith("/decision")) {
+      assert.equal(init.headers["X-Agent-Session"], secret);
+      return { ok: true, json: async () => ({ action: "wait", model: "fake" }) };
+    }
+    assert.equal(init.method, "DELETE");
+    assert.equal(init.headers["X-Agent-Session"], secret);
+    return { ok: true };
+  };
+  const session = await startBenchmarkSession({ limit: 2, fetchImpl });
+  assert.equal(JSON.stringify(session).includes(secret), false);
+  const ask = createPacedDecisionClient({ fetchImpl, sessionHeaders: session.headers,
+    now: () => 0, timeoutMs: 1000 });
+  const answer = await ask({ self: 1 });
+  assert.equal(answer.decision.action, "wait");
+  assert.equal(JSON.stringify(answer).includes(secret), false);
+  await session.stop();
+  await session.stop(); // idempotent, exactly one Stop request
+  assert.deepEqual(events.map((e) => [e.path, e.method]), [
+    ["/session", "POST"], ["/decision", "POST"], ["/session", "DELETE"],
+  ]);
+  assert.throws(session.headers, /already stopped/);
+});
+
+test("real local server gate blocks before Start and after Stop; fake upstream sees one authenticated call", async () => {
+  const f = fixture();
+  const observation = observeCore(f.game, f.me).observation;
+  const criteria = buildRequest(observation).questions.action.criteria;
+  let upstreamCalls = 0;
+  const logs = [];
+  const server = createAgentServer({
+    apiKey: "fake-key-not-a-credential",
+    minimumIntervalMs: 0,
+    log: async (record) => logs.push(record),
+    fetchImpl: async () => {
+      upstreamCalls++;
+      return { ok: true, json: async () => ({
+        model: "fake", answers: { action: { type: "choice", choice: "wait",
+          confidence: 1, probabilities: Object.fromEntries(Object.keys(criteria)
+            .map((id) => [id, id === "wait" ? 1 : 0])) } },
+      }) };
+    },
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const before = await fetch(`${baseUrl}/decision`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(observation),
+    });
+    assert.equal(before.status, 403);
+    assert.equal(upstreamCalls, 0);
+    const session = await startBenchmarkSession({ limit: 1, baseUrl });
+    try {
+      const ask = createPacedDecisionClient({ baseUrl,
+        sessionHeaders: session.headers });
+      const answer = await ask(observation);
+      assert.equal(answer.decision.action, "wait");
+      assert.equal(upstreamCalls, 1);
+      const spent = await fetch(`${baseUrl}/decision`, {
+        method: "POST", headers: { "Content-Type": "application/json",
+          ...session.headers() }, body: JSON.stringify(observation),
+      });
+      assert.equal(spent.status, 403);
+      assert.equal(upstreamCalls, 1);
+    } finally {
+      await session.stop();
+    }
+    const after = await fetch(`${baseUrl}/decision`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(observation),
+    });
+    assert.equal(after.status, 403);
+    assert.equal(logs.length, 1);
+    assert.equal(JSON.stringify(logs[0]).includes("fake-key-not-a-credential"), false);
+  } finally {
+    await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+  }
+});
+
+test("Start refuses invalid caps; failed Stop blocks decisions but allows revoke retry", async () => {
+  let requests = 0;
+  await assert.rejects(startBenchmarkSession({ limit: 301,
+    fetchImpl: () => { requests++; throw new Error("must not fetch"); },
+  }), /1\.\.300/);
+  assert.equal(requests, 0);
+  let deletes = 0;
+  const session = await startBenchmarkSession({ limit: 1, fetchImpl: async (_url, init) =>
+    init.method === "POST"
+      ? { ok: true, json: async () => ({ token: "B".repeat(32), mode: "benchmark", limit: 1 }) }
+      : (++deletes === 1 ? { ok: false, status: 503 } : { ok: true }),
+  });
+  await assert.rejects(session.stop(), /Local session Stop HTTP 503/);
+  assert.throws(session.headers, /already stopped/);
+  await session.stop();
+  assert.equal(deletes, 2);
 });
 
 test("sidecar failure does not invent a wait or attack", async () => {

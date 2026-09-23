@@ -113,10 +113,57 @@ export function createTickPacer({
   };
 }
 
+// Explicit Start for one benchmark match. The token stays in a closure; never
+// return it as data that could be serialized into the benchmark report.
+export async function startBenchmarkSession({
+  limit,
+  fetchImpl = fetch,
+  baseUrl = "http://127.0.0.1:8788",
+  timeoutMs = 2000,
+} = {}) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 300)
+    throw new Error("Benchmark Start limit must be 1..300");
+  const url = `${baseUrl}/session`;
+  const response = await fetchImpl(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "benchmark", limit }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`Local session Start HTTP ${response.status}`);
+  const data = await response.json();
+  if (data?.mode !== "benchmark" || data.limit !== limit ||
+      typeof data.token !== "string" || !/^[A-Za-z0-9_-]{32}$/.test(data.token))
+    throw new Error("Local session Start returned an invalid contract");
+  const token = data.token;
+  let closed = false;
+  let revoked = false;
+  return {
+    headers: () => {
+      if (closed) throw new Error("Benchmark Start session already stopped");
+      return { "X-Agent-Session": token };
+    },
+    async stop() {
+      if (revoked) return;
+      // Block further decisions before I/O; a failed DELETE can be retried.
+      closed = true;
+      const result = await fetchImpl(url, {
+        method: "DELETE",
+        headers: { "X-Agent-Session": token },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!result.ok) throw new Error(`Local session Stop HTTP ${result.status}`);
+      revoked = true;
+    },
+  };
+}
+
 // Local sidecar only: never read a credential or call TypeSafe directly.
 // One outstanding request, real monotonic >=1s between *starts*, no queue.
 export function createPacedDecisionClient({
   fetchImpl = fetch,
+  baseUrl = "http://127.0.0.1:8788",
+  sessionHeaders = () => ({}),
   now = () => performance.now(),
   sleep = (ms) => sleepMs(ms),
   timeoutMs = 6500,
@@ -135,9 +182,9 @@ export function createPacedDecisionClient({
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetchImpl("http://127.0.0.1:8788/decision", {
+        const response = await fetchImpl(`${baseUrl}/decision`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...sessionHeaders() },
           body: JSON.stringify(observation),
           signal: controller.signal,
         });
