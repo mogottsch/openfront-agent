@@ -198,16 +198,52 @@ test('inference result is rejected after too many game ticks despite fresh wall-
   await assert.rejects(pending, /cancelled or stale/);
 });
 
-test('slow result fails despite fresh heartbeat; invalid model plans never persist', async () => {
+test('5-second inference succeeds with 1Hz heartbeats and a 20-second snapshot window', async () => {
   const outstanding = deferred();
   let time = 1000;
   const session = createPlanSession({ now: () => time, planner: () => outstanding.promise });
   const s = snapshot();
   session.start(s);
   const pending = session.plan(s);
-  time = 3500;
-  session.heartbeat(beat(snapshot({ tick: 105, observed_at_ms: time })));
+  for (let second = 1; second <= 5; second++) {
+    time = 1000 + second * 1000;
+    session.heartbeat(beat(snapshot({ tick: 100 + second, observed_at_ms: time })));
+  }
   outstanding.resolve(result({ snapshot: { game_id: 'game-1', tick: 100, region_ids: ['r1'] }, previousPlan: null }));
+  assert.equal((await pending).plan_version, 1);
+  assert.equal(session.getPlan({ session_id: 'run-1', game_id: 'game-1' }).plan_version, 1);
+});
+
+test('3-second heartbeat outage rejects slow result and cannot revive the old plan', async () => {
+  const outstanding = deferred();
+  let time = 1000;
+  const session = createPlanSession({ now: () => time, planner: () => outstanding.promise });
+  const s = snapshot();
+  session.start(s);
+  const pending = session.plan(s);
+  time = 2000;
+  session.heartbeat(beat(snapshot({ tick: 101, observed_at_ms: time })));
+  time = 5001; // 3001 ms since the last received heartbeat, within snapshot-age window
+  outstanding.resolve(result({ snapshot: { game_id: 'game-1', tick: 100, region_ids: ['r1'] }, previousPlan: null }));
+  await assert.rejects(pending, /cancelled or stale/);
+  assert.equal(session.getPlan({ session_id: 'run-1', game_id: 'game-1' }), null);
+  session.heartbeat(beat(snapshot({ tick: 102, observed_at_ms: time })));
+  assert.equal(session.getPlan({ session_id: 'run-1', game_id: 'game-1' }), null);
+});
+
+test('slow result exceeding snapshot age fails even with continuous heartbeats; invalid plan never persists', async () => {
+  const outstanding = deferred();
+  let time = 1000;
+  const session = createPlanSession({ now: () => time, maxTickLag: 100,
+    planner: () => outstanding.promise });
+  const s = snapshot();
+  session.start(s);
+  const pending = session.plan(s);
+  for (let second = 1; second <= 21; second++) {
+    time = 1000 + second * 1000;
+    session.heartbeat(beat(snapshot({ tick: 100 + second, observed_at_ms: time })));
+  }
+  outstanding.resolve({ ...result({ snapshot: { game_id: 'game-1', tick: 100, region_ids: ['r1'] }, previousPlan: null }), expires_tick: 400 });
   await assert.rejects(pending, /cancelled or stale/);
   assert.equal(session.getPlan({ session_id: 'run-1', game_id: 'game-1' }), null);
   const wrong = createPlanSession({ now: () => 1000, planner: async (args) => ({
@@ -216,4 +252,25 @@ test('slow result fails despite fresh heartbeat; invalid model plans never persi
   wrong.start(s);
   await assert.rejects(wrong.plan(s), /Invalid or stale Copilot plan/);
   assert.equal(wrong.getPlan({ session_id: 'run-1', game_id: 'game-1' }), null);
+});
+
+test('cancelled old session cannot overlap new provider work or install later', async () => {
+  const outstanding = deferred();
+  let calls = 0;
+  const session = createPlanSession({ now: () => 1000, planner: (args) => {
+    calls++;
+    return calls === 1 ? outstanding.promise : Promise.resolve(result(args));
+  } });
+  const old = snapshot();
+  session.start(old);
+  const pending = session.plan(old);
+  session.stop();
+  const next = snapshot({ session_id: 'run-2' });
+  session.start(next);
+  await assert.rejects(session.plan(next), /already in flight/);
+  assert.equal(calls, 1);
+  outstanding.resolve(result({ snapshot: { game_id: 'game-1', tick: 100, region_ids: ['r1'] }, previousPlan: null }));
+  await assert.rejects(pending, /cancelled or stale/);
+  assert.equal((await session.plan(next)).plan_version, 1);
+  assert.equal(calls, 2);
 });

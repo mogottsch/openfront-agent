@@ -68,16 +68,19 @@ const publicPlan = (plan) => ({
  *   plan(snapshot) is the ONLY model-call entrypoint; at most one in flight.
  *   getPlan({session_id,game_id}) returns a minimal copy only while fresh.
  *   stop() invalidates both the plan and in-flight work.
+ * maxSnapshotAgeMs bounds the inference snapshot from start through result;
+ * maxHeartbeatGapMs separately bounds silence since the last received heartbeat.
  * An AbortSignal is offered to the injected planner. The current Copilot
  * connector does not yet forward it to its SDK transport, so generation and
  * freshness checks independently reject late results; abort is logical here.
  */
 export function createPlanSession({
-  planner, now = Date.now, maxSnapshotAgeMs = 2_000,
-  maxTickLag = 20, maxPlanTicks = 300,
+  planner, now = Date.now, maxSnapshotAgeMs = 20_000,
+  maxHeartbeatGapMs = 2_000, maxTickLag = 20, maxPlanTicks = 300,
 } = {}) {
   if (typeof planner !== 'function' || typeof now !== 'function' ||
       !number(maxSnapshotAgeMs) || maxSnapshotAgeMs === 0 ||
+      !number(maxHeartbeatGapMs) || maxHeartbeatGapMs === 0 ||
       !number(maxTickLag) || !number(maxPlanTicks) || maxPlanTicks === 0) {
     throw new Error('Invalid plan-session configuration');
   }
@@ -87,12 +90,13 @@ export function createPlanSession({
   let generation = 0;
   let pending = null;
 
-  function fresh(timestamp) {
+  function fresh(timestamp, limit = maxSnapshotAgeMs) {
     const time = now();
-    return Number.isSafeInteger(time) && time >= timestamp && time - timestamp <= maxSnapshotAgeMs;
+    return Number.isSafeInteger(time) && time >= timestamp && time - timestamp <= limit;
   }
   function live(heartbeat = active) {
-    return heartbeat !== null && fresh(heartbeat.observed_at_ms) && fresh(heartbeat.received_at_ms);
+    return heartbeat !== null && fresh(heartbeat.observed_at_ms) &&
+      fresh(heartbeat.received_at_ms, maxHeartbeatGapMs);
   }
   function cancel() {
     generation++;
