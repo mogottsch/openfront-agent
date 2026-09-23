@@ -96,29 +96,44 @@ const adapter = createNavalAdapter({ game: facade, read: state,
     return true;
   },
 });
-const proposal = await adapter.propose({ mapId: "onion", maxCandidates: 24,
-  maxCoastTiles: 512, maxPairs: 2048, maxWorkerChecks: 48 });
-if (!proposal.candidates.length) throw new Error(
-  `Real Onion adapter found no worker-checked candidates: ${JSON.stringify(proposal.coverage)}`);
-// Snapshot the approved land fields from the SAME actual game tick, before
-// mock boat emission. No reconstructed enemy/attack metadata or fake actions.
-const landSnapshot = observeCore(game, player);
-if (landSnapshot.tick !== proposal.source_tick || proposal.current_tick !== landSnapshot.tick)
-  throw new Error("Naval and land observations did not share an engine tick");
-const hybridInput = validateHybridInput({
-  game_id: gameID,
-  snapshot_tick: landSnapshot.tick,
-  land: landSnapshot.observation,
-  building: null, // no City site scan was performed in this isolated test
-  city_mechanics: {
-    troop_capacity_gain_display: config.cityTroopIncrease() / 10,
-    construction_ticks: config.unitInfo(UnitType.City).constructionDuration,
-  },
-  plan: null,
-  naval: proposal, // EXACT adapter.propose() result, no invented candidates
-});
-// EXPLICIT MOCK Choice, not Jev: first worker-checked wilderness candidate.
-const chosen = proposal.candidates.find((c: any) => c.target_type === "wilderness");
+async function captureHybrid() {
+  const proposal = await adapter.propose({ mapId: "onion", maxCandidates: 24,
+    maxCoastTiles: 512, maxPairs: 2048, maxWorkerChecks: 48 });
+  if (!proposal.candidates.length) throw new Error(
+    `Real Onion adapter found no worker-checked candidates: ${JSON.stringify(proposal.coverage)}`);
+  // Genuine same-tick raw land state; no reconstructed enemy/attack metadata.
+  const landSnapshot = observeCore(game, player);
+  if (landSnapshot.tick !== proposal.source_tick || proposal.current_tick !== landSnapshot.tick)
+    throw new Error("Naval and land observations did not share an engine tick");
+  const hybridInput = validateHybridInput({
+    game_id: gameID,
+    snapshot_tick: landSnapshot.tick,
+    land: landSnapshot.observation,
+    building: null, // no City scan was performed in this isolated test
+    city_mechanics: {
+      troop_capacity_gain_display: config.cityTroopIncrease() / 10,
+      construction_ticks: config.unitInfo(UnitType.City).constructionDuration,
+    },
+    plan: null,
+    naval: proposal, // EXACT adapter.propose() result, no invented candidates
+  });
+  return { tick: game.ticks(), tiles: player.numTilesOwned(),
+    troops: player.troops(), gold: player.gold().toString(),
+    ports: player.unitCount(UnitType.Port),
+    proposal, land_observation: landSnapshot.observation,
+    hybrid_input: hybridInput };
+}
+const before = await captureHybrid(); // depleted island at tick 449
+const regrowTicks = 200; // 20 simulated seconds, no new human intents
+for (let i = 0; i < regrowTicks; i++) step();
+if (game.ticks() !== before.tick + regrowTicks || player.units(UnitType.TransportShip).length)
+  throw new Error("Regrowth did not preserve a boat-free advancing game");
+const afterRegrow: any = { ...(await captureHybrid()), noNewHumanIntentTicks: regrowTicks };
+if (afterRegrow.troops <= before.troops)
+  throw new Error("No stronger reserve after the bounded no-intent regrowth interval");
+// EXPLICIT MOCK Choice, not Jev: first worker-checked wilderness candidate
+// from the *fresh* post-regrowth proposal (never the stale tick-449 offer).
+const chosen = afterRegrow.proposal.candidates.find((c: any) => c.target_type === "wilderness");
 if (!chosen) throw new Error("No wilderness candidate in bounded real-engine proposal");
 const fraction = 0.1;
 if (!chosen.worker_source_confirmed || !await adapter.canExecute(chosen.id, fraction) ||
@@ -130,17 +145,11 @@ const predictedSource = runner.playerBuildables(player.id(),
   game.x(emitted.dst), game.y(emitted.dst), [UnitType.TransportShip])[0]?.canBuild;
 if (predictedSource === false || predictedSource === undefined)
   throw new Error("Worker no longer reports the emitted destination buildable");
-const before = { tick: game.ticks(), tiles: player.numTilesOwned(),
-  troops: player.troops(), gold: player.gold().toString(),
-  ports: player.unitCount(UnitType.Port),
-  chosenCandidate: chosen,
-  proposal, // full exact proposal: all candidates, boats, coverage and omissions
-  land_observation: landSnapshot.observation,
-  hybrid_input: hybridInput, // strictly validated v4.2 request shape at this tick
-  mockChoice: { source: "explicit-mock", candidate_id: chosen.id, fraction },
-  workerSource: { x: game.x(predictedSource), y: game.y(predictedSource) },
-  emitted: { type: emitted.type, dst: { x: game.x(emitted.dst), y: game.y(emitted.dst) },
-    troops: emitted.troops } };
+afterRegrow.chosenCandidate = chosen;
+afterRegrow.mockChoice = { source: "explicit-mock", candidate_id: chosen.id, fraction };
+afterRegrow.workerSource = { x: game.x(predictedSource), y: game.y(predictedSource) };
+afterRegrow.emitted = { type: emitted.type,
+  dst: { x: game.x(emitted.dst), y: game.y(emitted.dst) }, troops: emitted.troops };
 step([emitted]);
 queued = null;
 const boat = player.units(UnitType.TransportShip).find((u: any) =>
@@ -161,7 +170,7 @@ step();
 const result = {
   engineCommit: execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   scenario: "production Onion, one human, no opponents, fixed land expansion to 6505 island tiles",
-  modelCalls: 0, landSends, before,
+  modelCalls: 0, landSends, before, after_regrow: afterRegrow,
   after: { tick: game.ticks(), landingTicks,
     landingOwned: game.ownerID(emitted.dst) === player.smallID(),
     unitActive: boat.isActive(), tiles: player.numTilesOwned(),
@@ -171,5 +180,9 @@ const result = {
 };
 await mkdir("logs", { recursive: true });
 await writeFile("logs/naval-adapter-engine.json", JSON.stringify(result, null, 2) + "\n");
-console.log(`Mock naval candidate ${chosen.id}: worker source (${before.workerSource.x},${before.workerSource.y}), ` +
-  `normal boat ${before.emitted.troops} troops landed in ${landingTicks} ticks; ignored logs/naval-adapter-engine.json`);
+console.log(`Island reserve ${before.land_observation.self.troops} -> ` +
+  `${afterRegrow.land_observation.self.troops} displayed after ${regrowTicks} no-intent ticks. ` +
+  `Mock naval candidate ${chosen.id}: worker source ` +
+  `(${afterRegrow.workerSource.x},${afterRegrow.workerSource.y}), ` +
+  `normal boat ${afterRegrow.emitted.troops} troops landed in ${landingTicks} ticks; ` +
+  `ignored logs/naval-adapter-engine.json`);
