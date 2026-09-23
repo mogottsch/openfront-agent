@@ -27,6 +27,7 @@ const omissionKeys = [
   "prefilter_limit",
   "worker_unchecked",
   "pending_intent",
+  "occupied_city",
   "not_buildable",
   "relocated",
   "upgrade_not_city_build",

@@ -11,6 +11,7 @@ function hybridInput() {
     prefilter_limit: 1,
     worker_unchecked: 0,
     pending_intent: 0,
+    occupied_city: 0,
     not_buildable: 0,
     relocated: 0,
     upgrade_not_city_build: 0,

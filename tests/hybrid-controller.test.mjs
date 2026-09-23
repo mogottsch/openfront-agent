@@ -41,6 +41,7 @@ function siteProposal() {
       prefilter_limit: 1,
       worker_unchecked: 0,
       pending_intent: 0,
+      occupied_city: 0,
       not_buildable: 0,
       relocated: 0,
       upgrade_not_city_build: 0,
@@ -149,6 +150,7 @@ test("opt-in hybrid chooses the exact opaque City candidate and emits one callba
     ["scan", "jev", "legal", "send"],
   );
   assert.equal(s.calls[0].opts.maxWorkerChecks, 12);
+  assert.equal(s.updates.find((e) => e.cityScan).cityScan.worker_checked, 1);
   assert.deepEqual(s.sends, [{ kind: "city", id: "solo-1/map@100#1:c1" }]);
   assert.equal(
     s.updates.find((e) => e.decision).decision.outcome,
@@ -270,5 +272,9 @@ test("scan errors are explicit and do not trigger model-supplied City guesses", 
       .filter(Boolean)
       .join(" "),
     /City scan unavailable/,
+  );
+  assert.match(
+    s.updates.find((x) => x.cityScan).cityScan.error,
+    /worker unavailable/,
   );
 });

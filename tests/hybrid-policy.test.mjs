@@ -68,6 +68,7 @@ const base = () => ({
       prefilter_limit: 10,
       worker_unchecked: 10,
       pending_intent: 0,
+      occupied_city: 0,
       not_buildable: 4,
       relocated: 1,
       upgrade_not_city_build: 0,

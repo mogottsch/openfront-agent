@@ -32,6 +32,7 @@ export function mount(connection) {
       <p id="hybrid-status"><small>Hybrid City experiment: checking server opt-in (City scans at most once per 15s; no Copilot calls yet).</small></p>
       <p id="status" role="status">Stopped — no API calls until Start.</p>
       <p id="mode"></p>
+      <details><summary>Latest City scan (geometry / legality / omissions)</summary><pre id="scan">Not scanned yet.</pre></details>
       <pre id="state">Awaiting first observation</pre>
       <details><summary>Input and available actions</summary><pre id="payload" style="max-height:240px;overflow:auto;overflow-wrap:anywhere"></pre></details>
       <p id="count">Requests: 0</p>
@@ -76,6 +77,8 @@ export function mount(connection) {
     if (disposed) return;
     if (event.status) $("status").textContent = event.status;
     if (event.mode) $("mode").textContent = `Decision scope: ${event.mode}`;
+    if (event.cityScan)
+      $("scan").textContent = JSON.stringify(event.cityScan, null, 2);
     if (event.running !== undefined) {
       if (
         !event.running &&

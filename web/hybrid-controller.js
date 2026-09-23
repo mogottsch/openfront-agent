@@ -79,11 +79,20 @@ export class HybridController extends LandController {
       this.cityProposalAt = this.now();
       this.onUpdate({
         status: `City sites checked: ${proposal.candidates.length} offered; ${proposal.coverage.omitted_count} omitted`,
+        cityScan: {
+          offered: proposal.candidates.length,
+          available_gold: proposal.available_gold,
+          total_eligible: proposal.coverage.total_eligible,
+          worker_checked: proposal.coverage.worker_checked,
+          omitted: proposal.coverage.omitted_count,
+          reasons: proposal.omissions,
+        },
       });
     } catch (error) {
       if (isCurrent())
         this.onUpdate({
           status: `City scan unavailable: ${error.message}; next choice is land-only`,
+          cityScan: { error: error.message },
         });
     }
   }
