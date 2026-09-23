@@ -4,7 +4,11 @@ import { EventBus } from "../core/EventBus";
 import { GameType, UnitType } from "../core/game/Game";
 import { TileRef } from "../core/game/GameMap";
 import { GameUpdateType } from "../core/game/GameUpdates";
-import { BuildUnitIntentEvent, SendAttackIntentEvent } from "./Transport";
+import {
+  BuildUnitIntentEvent,
+  SendAttackIntentEvent,
+  SendBoatAttackIntentEvent,
+} from "./Transport";
 import { GameView } from "./view/GameView";
 
 export function attachWildernessAgent(
@@ -67,11 +71,32 @@ export function attachWildernessAgent(
     events.emit(new BuildUnitIntentEvent(unit, tile));
     return true;
   };
+  // The naval adapter will verify transport buildability, target ownership,
+  // boat cap and current reserve before using this ordinary intent path.
+  const sendBoat = (dst: TileRef, troops: number) => {
+    const state = read();
+    const player = game.myPlayer();
+    if (
+      !state.ready ||
+      state.ended ||
+      !player ||
+      !Number.isInteger(dst) ||
+      !game.isValidRef(dst) ||
+      !game.isLand(dst) ||
+      game.isImpassable(dst) ||
+      game.ownerID(dst) === player.smallID() ||
+      !Number.isFinite(troops) ||
+      troops < 1
+    )
+      return false;
+    events.emit(new SendBoatAttackIntentEvent(dst, troops));
+    return true;
+  };
   const url = "http://127.0.0.1:8788/agent.js";
   void import(/* @vite-ignore */ url)
     .then((module) => {
       if (!disposed)
-        cleanup = module.mount({ game, read, sendAttack, sendBuild });
+        cleanup = module.mount({ game, read, sendAttack, sendBuild, sendBoat });
     })
     .catch(() => {
       if (!disposed)
