@@ -19,6 +19,66 @@ function around(game, tile, buffer) {
 }
 
 /**
+ * Pure code-side shortlist ordering over geometric site summaries. This does
+ * NOT predict engine path distance, transport legality, a good naval attack,
+ * or a model choice. When no truncation is needed the original scan order is
+ * retained byte-for-byte (including candidate IDs in the caller).
+ */
+export function selectNavalCandidateIndexes(pool, maxCandidates) {
+  bounded(maxCandidates, "maxCandidates", 128);
+  if (!Array.isArray(pool)) throw new TypeError("Invalid naval candidate pool");
+  const indexes = pool.map((_, index) => index);
+  if (pool.length <= maxCandidates) return indexes;
+  const span = (i) => pool[i].water_span_estimate_tiles;
+  const region = (i) => pool[i].target_region_tiles;
+  const shore = (i) => pool[i].target_shore_tiles;
+  const nearFirst = (a, b) => span(a) - span(b) || region(b) - region(a) ||
+    shore(b) - shore(a) || a - b;
+  const ranked = indexes.toSorted(nearFirst);
+  const chosen = [];
+  const taken = new Set();
+  const take = (i) => {
+    if (i !== undefined && chosen.length < maxCandidates && !taken.has(i)) {
+      taken.add(i);
+      chosen.push(i);
+    }
+  };
+  // Reserve the two opposite geometry extremes before other diversity axes.
+  // With a one-site budget the near shore wins; neither is an action choice.
+  take(ranked[0]);
+  take(indexes.toSorted((a, b) => region(b) - region(a) ||
+    span(a) - span(b) || shore(b) - shore(a) || a - b)[0]);
+  take(indexes.toSorted((a, b) => shore(b) - shore(a) ||
+    span(a) - span(b) || region(b) - region(a) || a - b)[0]);
+  const preserveAxis = (keyOf) => {
+    const representative = new Map();
+    for (const i of ranked) {
+      const key = keyOf(pool[i]);
+      if (!representative.has(key)) representative.set(key, i);
+    }
+    const represented = new Set(chosen.map((i) => keyOf(pool[i])));
+    for (const [key, i] of representative) {
+      if (!represented.has(key)) {
+        take(i);
+        represented.add(key);
+      }
+    }
+  };
+  preserveAxis((c) => c.target_owner_id);
+  preserveAxis((c) => c.water_component_id);
+  preserveAxis((c) => c.source_region_id);
+  const dominates = (a, b) =>
+    span(a) <= span(b) && region(a) >= region(b) && shore(a) >= shore(b) &&
+    (span(a) < span(b) || region(a) > region(b) || shore(a) > shore(b));
+  for (const i of ranked) {
+    if (!indexes.some((j) => j !== i && dominates(j, i))) take(i);
+  }
+  preserveAxis((c) => c.target_region_id);
+  for (const i of ranked) take(i);
+  return chosen;
+}
+
+/**
  * Analyze a previously captured analyzeSpatialMap(game, ownSmallID, ...)
  * snapshot. This function does another explicit O(width*height) read-only pass
  * to group target-owned/passable land regions. No scheduling or worker call.
@@ -187,28 +247,9 @@ export function analyzeNavalSpatial(game, spatial, {
         status: "geometric_only_not_engine_legal" });
     }
   }
-  const selected = [];
-  const selectedIndexes = new Set();
-  const take = (index) => {
-    if (index !== undefined && !selectedIndexes.has(index) &&
-        selected.length < maxCandidates) {
-      selectedIndexes.add(index);
-      selected.push({ id: `${spatial.snapshot_id}:n${index + 1}`, ...pool[index] });
-    }
-  };
-  const distinct = (keyOf) => {
-    const first = new Map();
-    for (let i = 0; i < pool.length; i++) {
-      const key = keyOf(pool[i]);
-      if (!first.has(key)) first.set(key, i);
-    }
-    for (const index of first.values()) take(index);
-  };
-  distinct((c) => c.target_owner_id);
-  distinct((c) => c.target_region_id);
-  distinct((c) => c.water_component_id);
-  distinct((c) => c.source_region_id);
-  for (let i = 0; i < pool.length; i++) take(i);
+  const selected = selectNavalCandidateIndexes(pool, maxCandidates)
+    .map((index) => ({ id: `${spatial.snapshot_id}:n${index + 1}`,
+      ...pool[index] }));
   const reasons = {
     coast_budget_unexamined: totalEligible - coastBudgetPairs,
     pair_budget_unexamined: coastBudgetPairs - pool.length,

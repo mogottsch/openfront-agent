@@ -3,7 +3,7 @@
 // part of the one-second land loop. No game intent is emitted by this module.
 import { ATTACK_FRACTIONS, TRIBE_ATTACK_FRACTIONS } from "./observation.js";
 import { analyzeSpatialMap } from "./spatial-map.js";
-import { analyzeNavalSpatial } from "./naval-spatial.js";
+import { analyzeNavalSpatial, selectNavalCandidateIndexes } from "./naval-spatial.js";
 
 const typeName = { HUMAN: "human", NATION: "nation", BOT: "tribe" };
 const REVIEW_TICKS = 30;
@@ -227,13 +227,21 @@ export function createNavalAdapter({ game, read, sendBoat, transportUnit }) {
           invalid_gold: 0, unaffordable: 0 };
         const candidates = [];
         const offered = new Map();
+        // Geometry may be requested with a larger fallback pool than the
+        // offered cohort. Prioritize Pareto-diverse near/large coasts before
+        // bounded worker checks, then retain every other site as a fallback.
+        // For a full untruncated cohort this preserves the historical order.
+        const priority = selectNavalCandidateIndexes(naval.candidates, maxCandidates);
+        const prioritySet = new Set(priority);
+        const ordered = [...priority.map((i) => naval.candidates[i]),
+          ...naval.candidates.filter((_, i) => !prioritySet.has(i))];
         let processed = 0;
         let workerChecked = 0;
-        const limit = Math.min(naval.candidates.length, maxWorkerChecks);
+        const limit = Math.min(ordered.length, maxWorkerChecks);
         for (let i = 0; i < limit && candidates.length < maxCandidates; i++) {
           processed++;
           assertFresh();
-          const site = naval.candidates[i];
+          const site = ordered[i];
           const key = `${map_id}:${site.target_shore_tile}`;
           if (pending.has(key)) { counts.pending_intent++; continue; }
           if (!fleetRoom(snapshot)) { counts.cap_blocked++; continue; }

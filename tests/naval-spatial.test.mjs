@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { analyzeSpatialMap } from "../web/spatial-map.js";
-import { analyzeNavalSpatial } from "../web/naval-spatial.js";
+import { analyzeNavalSpatial, selectNavalCandidateIndexes } from "../web/naval-spatial.js";
 
 function map(rows) {
   const width = rows[0].length;
@@ -107,6 +108,69 @@ test("two disconnected own shores touching one body remain separate source regio
   assert.equal(none.candidates.length, 0);
   assert.equal(none.reasons.coast_budget_unexamined, 2);
 });
+
+test("closest coast last in map scan survives a truncated diverse shortlist", () => {
+  const { game } = map([
+    "A~~~~~~~~~BBBB",
+    "A~~~~~~~BB~~~~",
+    "A~B~~~~~~~~~~~",
+  ]);
+  const spatial = snapshot(game);
+  const full = analyzeNavalSpatial(game, spatial, { maxCandidates: 3 });
+  assert.equal(full.candidates.length, 3);
+  assert.deepEqual(full.candidates.map((c) => c.target_region_tiles), [4, 2, 1]);
+  const near = full.candidates[2]; // last target-owner region in row-major scan
+  const cut = analyzeNavalSpatial(game, spatial, { maxCandidates: 2 });
+  assert.deepEqual(cut.candidates.map((c) => c.target_region_tiles), [1, 4]);
+  assert.equal(cut.candidates[0].id, near.id); // original pool ID retained
+  assert.equal(cut.reasons.shortlist_limit, 1);
+  assert.equal(cut.omitted_count, 1);
+  assert.equal(cut.coast.coast_budget_truncated_owner_regions, 0);
+});
+
+test("Pareto geometry preserves distinct owner/water/source axes when budget allows", () => {
+  const pool = [
+    { target_owner_id: 0, water_component_id: "w1", source_region_id: "s1",
+      target_region_id: "r1", water_span_estimate_tiles: 100,
+      target_region_tiles: 1000, target_shore_tiles: 20 },
+    { target_owner_id: 0, water_component_id: "w1", source_region_id: "s1",
+      target_region_id: "r2", water_span_estimate_tiles: 2,
+      target_region_tiles: 10, target_shore_tiles: 2 },
+    { target_owner_id: 2, water_component_id: "w2", source_region_id: "s2",
+      target_region_id: "r3", water_span_estimate_tiles: 20,
+      target_region_tiles: 200, target_shore_tiles: 12 },
+    { target_owner_id: 0, water_component_id: "w1", source_region_id: "s1",
+      target_region_id: "r4", water_span_estimate_tiles: 50,
+      target_region_tiles: 50, target_shore_tiles: 5 },
+  ];
+  assert.deepEqual(selectNavalCandidateIndexes(pool, 4), [0, 1, 2, 3]);
+  assert.deepEqual(selectNavalCandidateIndexes(pool, 3), [1, 0, 2]);
+  assert.deepEqual(selectNavalCandidateIndexes(pool, 2), [1, 0]);
+  assert.deepEqual(selectNavalCandidateIndexes(pool, 1), [1]);
+  assert.deepEqual(selectNavalCandidateIndexes(pool, 0), []);
+});
+
+const onionArtifact = new URL("../logs/naval-adapter-engine.json", import.meta.url);
+test("ignored genuine Onion tick649 proposal replay keeps near and large with max6",
+  { skip: !existsSync(onionArtifact) }, () => {
+    const source = JSON.parse(readFileSync(onionArtifact, "utf8"));
+    const proposal = source.after_regrow.proposal;
+    assert.equal(source.engineCommit, "bb8af015b515b3b717bd4d901074c5f4c16641cb");
+    assert.equal(proposal.source_tick, 649);
+    assert.equal(proposal.candidates.length, 11);
+    assert.equal(proposal.coverage.worker_checked, 11);
+    const selected = selectNavalCandidateIndexes(proposal.candidates, 6)
+      .map((i) => proposal.candidates[i]);
+    assert.equal(selected.length, 6);
+    assert(selected.some((c) => c.water_span_estimate_tiles === 18));
+    assert(selected.some((c) => c.target_region_tiles === 76697));
+    assert.equal(proposal.candidates.length - selected.length, 5);
+    assert.deepEqual(selectNavalCandidateIndexes(proposal.candidates, 11),
+      Array.from({ length: 11 }, (_, i) => i));
+    process.stdout.write(`Onion tick649 stored worker-checked replay max6: ` +
+      `${selected.map((c) => `${c.id.split(":").at(-1)}=${c.water_span_estimate_tiles}`).join(", ")}; ` +
+      `stored cohort omitted 5\n`);
+  });
 
 test("impassable or unshored land cannot masquerade as a landing shore", () => {
   const { game } = map(["AA~#B"]);

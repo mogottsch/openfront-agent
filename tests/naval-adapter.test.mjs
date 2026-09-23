@@ -293,6 +293,52 @@ test("bounded geometric cohort and worker checks disclose every omission", async
   assert.equal(Object.values(p.omissions).reduce((sum, n) => sum + n, 0), 3);
 });
 
+test("adapter checks closest last shore before truncation, retaining a large region", async () => {
+  const f = fixture([
+    "A~~~~~~~~~BBBB",
+    "A~~~~~~~BB~~~~",
+    "A~B~~~~~~~~~~~",
+  ]);
+  const cut = await f.adapter.propose({ maxCandidates: 2,
+    maxCoastTiles: 10, maxPairs: 10, maxWorkerChecks: 3 });
+  assert.deepEqual(f.calls.map((c) => c.tile), [30, 10]);
+  assert.deepEqual(cut.candidates.map((c) => c.water_span_estimate_tiles), [4, 10]);
+  assert.deepEqual(cut.candidates.map((c) => c.target_region_tiles), [1, 4]);
+  assert.equal(cut.coverage.total_eligible, 3);
+  assert.equal(cut.coverage.worker_checked, 2);
+  assert.equal(cut.coverage.omitted_count, 1);
+  assert.equal(cut.omissions.geometry_shortlist_limit, 0);
+  assert.equal(cut.omissions.shortlist_limit, 1);
+  assert.equal(cut.omissions.worker_unchecked, 0);
+  const full = fixture([
+    "A~~~~~~~~~BBBB",
+    "A~~~~~~~BB~~~~",
+    "A~B~~~~~~~~~~~",
+  ]);
+  const uncut = await full.adapter.propose({ maxCandidates: 3,
+    maxCoastTiles: 10, maxPairs: 10, maxWorkerChecks: 3 });
+  assert.deepEqual(full.calls.map((c) => c.tile), [10, 22, 30]);
+  assert.deepEqual(uncut.candidates.map((c) => c.target_region_tiles), [4, 2, 1]);
+});
+
+test("worker-invalid near shore falls back without substituting an action", async () => {
+  const f = fixture([
+    "A~~~~~~~~~BBBB",
+    "A~~~~~~~BB~~~~",
+    "A~B~~~~~~~~~~~",
+  ]);
+  f.setWorker(async (tile) => [{ type: "Transport",
+    canBuild: tile === 30 ? false : 0, canUpgrade: false, cost: 0n }]);
+  const p = await f.adapter.propose({ maxCandidates: 2,
+    maxCoastTiles: 10, maxPairs: 10, maxWorkerChecks: 3 });
+  assert.deepEqual(f.calls.map((c) => c.tile), [30, 10, 22]);
+  assert.deepEqual(p.candidates.map((c) => c.target_region_tiles), [4, 2]);
+  assert.equal(p.omissions.not_buildable, 1);
+  assert.equal(p.coverage.worker_checked, 3);
+  assert.equal(p.coverage.omitted_count, 1);
+  assert.equal(f.sent.length, 0); // prefilter never sends a boat
+});
+
 test("tick drift bounded during proposal; final worker must stay on permit tick", async () => {
   const f = fixture();
   f.setWorker(async () => {
