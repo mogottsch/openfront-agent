@@ -53,7 +53,73 @@ function siteProposal() {
     },
   };
 }
-function setup({ decision, decideHybrid, propose, planClient } = {}) {
+function navalProposal() {
+  const snapshot_id = "solo-1/map@100#3";
+  return {
+    snapshot_id,
+    source_tick: 100,
+    current_tick: 100,
+    map_id: "solo-1/map",
+    available_troops_internal: 80000,
+    boats: { cap: 3, active_count: 0, active_transports: [] },
+    candidates: [
+      {
+        id: `${snapshot_id}:boat1`,
+        kind: "boat",
+        source_region_id: `${snapshot_id}:r1`,
+        target_region_id: `${snapshot_id}:nr1`,
+        target_owner_id: 0,
+        target_type: "wilderness",
+        target_region_tiles: 120,
+        water_component_id: `${snapshot_id}:w1`,
+        water_ocean_status: "ocean",
+        source_shore_tiles: 7,
+        target_shore_tiles: 9,
+        water_span_estimate_tiles: 19,
+        water_span_method: "shore_manhattan_separation_not_water_path",
+        status: "worker_checked_not_executed",
+        geometry_status: "geometric_only_not_engine_legal",
+        cost_gold: "0",
+        worker_source_confirmed: true,
+      },
+    ],
+    coverage: {
+      total_eligible: 1,
+      worker_checked: 1,
+      offered_count: 1,
+      omitted_count: 0,
+      coast: {
+        source_water_components: 1,
+        eligible_target_owner_regions: 1,
+        coast_budget_truncated_owner_regions: 0,
+        eligible_region_component_coasts: 1,
+        sampled_region_component_coasts: 1,
+        eligible_coast_contacts: 9,
+        sample_budget: 16,
+        shore_source: "isShore_and_water_adjacency",
+      },
+      certainty:
+        "Full-resolution water contact; worker checked, landing not guaranteed",
+    },
+    omissions: {
+      coast_budget_unexamined: 0,
+      pair_budget_unexamined: 0,
+      geometry_shortlist_limit: 0,
+      worker_unchecked: 0,
+      shortlist_limit: 0,
+      pending_intent: 0,
+      cap_blocked: 0,
+      invalid_target: 0,
+      not_buildable: 0,
+      invalid_worker_result: 0,
+      invalid_source: 0,
+      invalid_gold: 0,
+      unaffordable: 0,
+    },
+  };
+}
+
+function setup({ decision, decideHybrid, propose, planClient, naval } = {}) {
   let time = 0;
   const status = { ready: true, ended: false, tick: 100 };
   const land = observation(8000, 20000, "tribe");
@@ -86,6 +152,24 @@ function setup({ decision, decideHybrid, propose, planClient } = {}) {
       return true;
     },
   };
+  const navy = naval
+    ? {
+        propose: async (opts) => {
+          calls.push({ kind: "naval-scan", opts });
+          return naval;
+        },
+        canExecute: async (id, fraction) => {
+          calls.push({ kind: "naval-legal", id, fraction });
+          return true;
+        },
+        execute: async (id, fraction, isCurrent) => {
+          calls.push({ kind: "naval-send", id, fraction });
+          if (!isCurrent()) return false;
+          sends.push({ kind: "boat", id, fraction });
+          return true;
+        },
+      }
+    : null;
   const controller = new HybridController(adapter, builder, {
     gameId: () => "solo-1",
     mapId: () => "map",
@@ -95,6 +179,7 @@ function setup({ decision, decideHybrid, propose, planClient } = {}) {
       construction_ticks: 20,
     }),
     planClient: planClient ?? null,
+    navalAdapter: navy,
     decideLand: async () => ({ action: "wait", confidence: 1 }),
     decideHybrid: async (input, signal) => {
       calls.push({ kind: "jev", input });
@@ -144,6 +229,66 @@ function setup({ decision, decideHybrid, propose, planClient } = {}) {
     },
   };
 }
+
+test("City scan failure does not hide a worker-checked naval Choice or replace Jev's selected size", async () => {
+  const naval = navalProposal();
+  const s = setup({
+    naval,
+    propose: () => {
+      throw new Error("City worker unavailable");
+    },
+    decision: {
+      branch: "boat_attack",
+      kind: "boat",
+      selected: "boat_1_20",
+      candidate_id: naval.candidates[0].id,
+      fraction: 0.2,
+      context: {
+        game_id: "solo-1",
+        snapshot_tick: 100,
+        building_snapshot_id: null,
+        naval_snapshot_id: naval.snapshot_id,
+        plan_version: null,
+      },
+    },
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.deepEqual(s.sends, [
+    { kind: "boat", id: naval.candidates[0].id, fraction: 0.2 },
+  ]);
+  assert.equal(
+    s.updates.find((x) => x.decision).decision.outcome,
+    "transport boat intent sent",
+  );
+  assert.ok(s.updates.some((x) => x.status?.includes("City scan unavailable")));
+  assert.equal(s.calls.filter((x) => x.kind === "naval-scan").length, 1);
+});
+
+test("invented boat size cannot bypass the offered Choice", async () => {
+  const naval = navalProposal();
+  const s = setup({
+    naval,
+    decision: {
+      branch: "boat_attack",
+      kind: "boat",
+      selected: "boat_1_30",
+      candidate_id: naval.candidates[0].id,
+      fraction: 0.2,
+      context: {
+        game_id: "solo-1",
+        snapshot_tick: 100,
+        building_snapshot_id: "solo-1/map@100#1",
+        naval_snapshot_id: naval.snapshot_id,
+        plan_version: null,
+      },
+    },
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.deepEqual(s.sends, []);
+  assert.match(s.updates.at(-1).status, /not an offered target and size/);
+});
 
 test("optional Copilot plan is requested once before Jev and its active version binds the City choice", async () => {
   const calls = [];

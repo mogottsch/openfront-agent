@@ -3,6 +3,7 @@ import { HybridController } from "./hybrid-controller.js";
 import { createGameAdapter } from "./game-adapter.js";
 import { createBuildingAdapter } from "./building-adapter.js";
 import { createPlanClient } from "./plan-client.js";
+import { createNavalAdapter } from "./naval-adapter.js";
 
 export function mount(connection) {
   const adapter = createGameAdapter(connection);
@@ -24,7 +25,7 @@ export function mount(connection) {
     </style>
     <section>
       <h2>Jev · local land agent</h2>
-      <small>Wilderness first · tribe gold-steal exception.<br>Tribes: 10% / 20%. Other targets: up to 50%.<br>Preserve growth; incoming force counts. Local solo only.</small>
+      <small>Land growth · contested-tribe gold · patient defense.<br>Tribes: 10% / 20%; other targets up to 50%.<br>Hybrid can add worker-checked Cities / coast boats. Local solo only.</small>
       <div>
         <label>Interval (s) <input id="interval" aria-label="Decision interval seconds" type="number" min="1" max="30" value="1"></label>
         <label>Calls <input id="limit" aria-label="Request limit" type="number" min="1" max="300" value="30"></label>
@@ -35,6 +36,7 @@ export function mount(connection) {
       <p id="status" role="status">Stopped — no API calls until Start.</p>
       <p id="mode"></p>
       <details><summary>Latest City scan (geometry / legality / omissions)</summary><pre id="scan">Not scanned yet.</pre></details>
+      <details><summary>Latest naval scan (geometric candidates / worker checks)</summary><pre id="naval-scan">Not scanned yet.</pre></details>
       <pre id="state">Awaiting first observation</pre>
       <details><summary>Input and available actions</summary><pre id="payload" style="max-height:240px;overflow:auto;overflow-wrap:anywhere"></pre></details>
       <p id="count">Requests: 0</p>
@@ -82,6 +84,8 @@ export function mount(connection) {
     if (event.planStatus) $("planner-status").textContent = event.planStatus;
     if (event.cityScan)
       $("scan").textContent = JSON.stringify(event.cityScan, null, 2);
+    if (event.navalScan)
+      $("naval-scan").textContent = JSON.stringify(event.navalScan, null, 2);
     if (event.running !== undefined) {
       if (
         !event.running &&
@@ -96,11 +100,15 @@ export function mount(connection) {
       $("limit").disabled = event.running;
     }
     if (event.state) {
-      const { self, border, neighbors, economy, city_mechanics } = event.state;
+      const { self, border, neighbors, economy, city_mechanics, naval } =
+        event.state;
       $("state").textContent =
         `Troops ${self.troops}/${self.troop_capacity} (${self.reserve_percent}%)\nBorder: ${Math.round(border.wilderness_share * 100)}% wilderness, ${Math.round(border.player_share * 100)}% players\nNeighbors: ${neighbors.length} · incoming: ${self.active_incoming_troops}\nAlready committed: ${self.committed_outgoing_troops}` +
         (economy
-          ? `\nGold: ${economy.available_gold} · Cities: ${economy.cities.owned ?? "?"} · City sites: ${economy.city_sites_offered} offered / ${economy.city_sites_omitted} omitted · City cap gain: ${city_mechanics.troop_capacity_gain_display}`
+          ? `\nGold: ${economy.available_gold ?? "not sampled"} · Cities: ${economy.cities.owned ?? "?"} · City sites: ${economy.city_sites_offered} offered / ${economy.city_sites_omitted ?? "?"} omitted · City cap gain: ${city_mechanics.troop_capacity_gain_display}`
+          : "") +
+        (naval?.offered_destinations
+          ? `\nBoats ${naval.fleet.active_count ?? "?"}/${naval.fleet.cap ?? "?"} · ${naval.offered_destinations} coastal sites; ${naval.omitted_destinations} omitted`
           : "");
       $("payload").textContent = JSON.stringify(
         { state: event.state, actions: event.actions },
@@ -164,6 +172,10 @@ export function mount(connection) {
           },
         )
       : null;
+  const navalAdapter =
+    hybridController && typeof connection.sendBoat === "function"
+      ? createNavalAdapter({ ...connection, transportUnit: "Transport" })
+      : null;
   const planClient = hybridController
     ? createPlanClient({
         baseUrl: new URL("/", import.meta.url),
@@ -181,10 +193,12 @@ export function mount(connection) {
       hybridEnabled = Boolean(hybridController && health?.hybridEnabled);
       if (hybridEnabled && health?.plannerEnabled)
         hybridController.setPlanClient(planClient);
+      if (hybridEnabled && health?.navalEnabled && navalAdapter)
+        hybridController.setNavalAdapter(navalAdapter);
       $("hybrid").disabled =
         !hybridEnabled || Boolean(activeController?.running);
       $("hybrid-status").textContent = hybridEnabled
-        ? `Hybrid City experiment enabled; Copilot ${health?.plannerEnabled ? "enabled (opt-in on Start)" : "disabled"}. City scan at most once per 15s.`
+        ? `Hybrid enabled; Copilot ${health?.plannerEnabled ? "on" : "off"}, naval ${health?.navalEnabled && navalAdapter ? "on" : "off"}. City/coast scans at most once per 15s.`
         : "Hybrid City experiment disabled in local sidecar (land mode remains available).";
     })
     .catch(() => {

@@ -26,7 +26,9 @@ export class HybridController extends LandController {
       existingCityTiles,
       cityMechanics,
       planClient = null,
+      navalAdapter = null,
       cityScanIntervalMs = 15000,
+      navalScanIntervalMs = 15000,
       onUpdate = () => {},
       ...clock
     },
@@ -40,12 +42,18 @@ export class HybridController extends LandController {
       typeof mapId !== "function" ||
       typeof existingCityTiles !== "function" ||
       typeof cityMechanics !== "function" ||
+      (navalAdapter !== null &&
+        !["propose", "canExecute", "execute"].every(
+          (name) => typeof navalAdapter[name] === "function",
+        )) ||
       (planClient !== null &&
         !["plan", "heartbeat", "getPlan", "stop"].every(
           (name) => typeof planClient[name] === "function",
         )) ||
       !Number.isInteger(cityScanIntervalMs) ||
-      cityScanIntervalMs < 5000
+      cityScanIntervalMs < 5000 ||
+      !Number.isInteger(navalScanIntervalMs) ||
+      navalScanIntervalMs < 5000
     ) {
       throw new Error("Invalid hybrid controller dependencies");
     }
@@ -57,12 +65,29 @@ export class HybridController extends LandController {
     this.cityMechanics = cityMechanics;
     this.cityScanIntervalMs = cityScanIntervalMs;
     this.planClient = planClient;
+    this.navalAdapter = navalAdapter;
+    this.navalScanIntervalMs = navalScanIntervalMs;
+    this.nextNavalScanAt = 0;
+    this.navalProposal = null;
+    this.navalProposalAt = -Infinity;
     this.planAttempted = false;
     this.planFailed = false;
     this.planAbort = null;
     this.nextCityScanAt = 0;
     this.cityProposal = null;
     this.cityProposalAt = -Infinity;
+  }
+
+  setNavalAdapter(adapter) {
+    if (
+      this.running ||
+      !adapter ||
+      !["propose", "canExecute", "execute"].every(
+        (name) => typeof adapter[name] === "function",
+      )
+    )
+      throw new Error("Cannot change naval adapter during an active run");
+    this.navalAdapter = adapter;
   }
 
   setPlanClient(client) {
@@ -81,6 +106,9 @@ export class HybridController extends LandController {
     this.cityProposal = null;
     this.cityProposalAt = -Infinity;
     this.nextCityScanAt = 0;
+    this.nextNavalScanAt = 0;
+    this.navalProposal = null;
+    this.navalProposalAt = -Infinity;
     this.planAttempted = false;
     this.planFailed = false;
     super.start(settings);
@@ -129,6 +157,45 @@ export class HybridController extends LandController {
     }
   }
 
+  async scanNavalSites(isCurrent) {
+    if (!this.navalAdapter || this.now() < this.nextNavalScanAt) return;
+    this.nextNavalScanAt = this.now() + this.navalScanIntervalMs;
+    this.navalProposal = null;
+    try {
+      const proposal = await this.navalAdapter.propose({
+        mapId: this.mapId(),
+        maxCandidates: 8,
+        maxCoastTiles: 128,
+        maxPairs: 512,
+        maxWorkerChecks: 16,
+      });
+      if (!isCurrent()) return;
+      this.navalProposal = proposal;
+      this.navalProposalAt = this.now();
+      this.onUpdate({
+        navalScan: {
+          offered: proposal.candidates.length,
+          boats: {
+            cap: proposal.boats.cap,
+            active_count: proposal.boats.active_count,
+          },
+          target_coasts_eligible: proposal.coverage.total_eligible,
+          worker_checked: proposal.coverage.worker_checked,
+          omitted: proposal.coverage.omitted_count,
+          reasons: proposal.omissions,
+          certainty: proposal.coverage.certainty,
+        },
+        status: `Naval coasts checked: ${proposal.candidates.length} worker-legal; ${proposal.coverage.omitted_count} omitted`,
+      });
+    } catch (error) {
+      if (isCurrent())
+        this.onUpdate({
+          navalScan: { error: error.message },
+          status: `Naval scan unavailable: ${error.message}; no boat options this turn`,
+        });
+    }
+  }
+
   async step() {
     if (!this.running || this.busy) return;
     if (this.now() < this.nextAllowedStart) {
@@ -150,6 +217,8 @@ export class HybridController extends LandController {
         return;
       }
       await this.scanCitySites(isCurrent);
+      if (!isCurrent()) return;
+      await this.scanNavalSites(isCurrent);
       if (!isCurrent()) return;
       const observedAt = this.now();
       const snapshot = await this.adapter.observe();
@@ -206,47 +275,74 @@ export class HybridController extends LandController {
         }
         if (!isCurrent() || !this.fresh(snapshot.tick, observedAt)) return;
       }
-      let input = null;
-      // The City proposal is valid only within its own 2s / 20-tick window.
-      // If none exists, the panel explicitly reports land-only rather than
-      // silently presenting a stale City as a viable option.
-      if (
+      // Proposals are independently optional. A failed/expired City scan must
+      // not hide a genuinely worker-checked coastal option, and vice versa.
+      const compose = (building, naval) => ({
+        game_id: this.gameId(),
+        snapshot_tick: snapshot.tick,
+        land,
+        building,
+        naval,
+        city_mechanics: this.cityMechanics(),
+        plan: null,
+      });
+      let city =
         this.cityProposal &&
         this.now() - this.cityProposalAt <= 1500 &&
         snapshot.tick - this.cityProposal.source_tick <= 20 &&
         snapshot.tick >= this.cityProposal.current_tick
-      ) {
+          ? this.cityProposal
+          : null;
+      let naval =
+        this.navalProposal &&
+        this.now() - this.navalProposalAt <= 1500 &&
+        snapshot.tick - this.navalProposal.source_tick <= 20 &&
+        snapshot.tick >= this.navalProposal.current_tick
+          ? this.navalProposal
+          : null;
+      if (city)
         try {
-          input = validateHybridInput({
-            game_id: this.gameId(),
-            snapshot_tick: snapshot.tick,
-            land,
-            building: this.cityProposal,
-            city_mechanics: this.cityMechanics(),
-            plan: null,
-          });
+          validateHybridInput(compose(city, null));
         } catch (error) {
+          city = null;
           this.onUpdate({
-            status: `Discarded invalid City proposal: ${error.message}; land-only`,
+            status: `Discarded invalid City scan: ${error.message}`,
           });
         }
-      }
-      const hybrid = input && input.building.candidates.length > 0;
+      if (naval)
+        try {
+          validateHybridInput(compose(null, naval));
+        } catch (error) {
+          naval = null;
+          this.onUpdate({
+            status: `Discarded invalid naval scan: ${error.message}`,
+          });
+        }
+      const input =
+        city || naval ? validateHybridInput(compose(city, naval)) : null;
+      const hybrid = Boolean(
+        input && (city?.candidates.length || naval?.candidates.length),
+      );
       const offered = hybrid ? hybridChoices(input) : null;
       const state = hybrid ? hybridModelState(input) : modelState(land);
       const criteria = hybrid
         ? {
             branch: offered.branch,
-            land_action: actionCriteria(offered.land),
-            city_site: offered.city,
+            ...(offered.branch.land_attack
+              ? { land_action: actionCriteria(offered.land) }
+              : {}),
+            ...(offered.branch.city_build ? { city_site: offered.city } : {}),
+            ...(offered.branch.boat_attack
+              ? { boat_action: offered.boat }
+              : {}),
           }
         : actionCriteria(landActions);
       this.onUpdate({
         state,
         actions: criteria,
         mode: hybrid
-          ? "city opportunity + land"
-          : "land only (no fresh legal City sites)",
+          ? `land + ${city?.candidates.length ?? 0} City + ${naval?.candidates.length ?? 0} boat opportunities`
+          : "land only (no fresh worker-legal City or naval sites)",
       });
       if (Object.keys(landActions).length === 1 && !hybrid) {
         this.onUpdate({
@@ -259,7 +355,7 @@ export class HybridController extends LandController {
       this.count++;
       this.onUpdate({
         status: hybrid
-          ? "Asking Jev: land / City / wait"
+          ? "Asking Jev: land / City / boat / wait"
           : "Asking Jev: land only",
         count: this.count,
       });
@@ -279,7 +375,10 @@ export class HybridController extends LandController {
         const expectedContext = {
           game_id: input.game_id,
           snapshot_tick: snapshot.tick,
-          building_snapshot_id: input.building.snapshot_id,
+          building_snapshot_id: input.building?.snapshot_id ?? null,
+          ...(input.naval?.candidates.length
+            ? { naval_snapshot_id: input.naval.snapshot_id }
+            : {}),
           plan_version: activePlan?.plan_version ?? null,
         };
         if (
@@ -312,6 +411,35 @@ export class HybridController extends LandController {
             ))
               ? "City build intent sent"
               : "City intent not sent";
+        } else if (decision.kind === "boat") {
+          const site = offered.boat[decision.selected];
+          if (
+            !site ||
+            site.kind !== "boat" ||
+            site.candidate_id !== decision.candidate_id ||
+            site.fraction !== decision.fraction ||
+            !this.navalAdapter
+          )
+            throw new Error(
+              "Model boat choice was not an offered target and size",
+            );
+          chosen = site;
+          const legal = await this.navalAdapter.canExecute(
+            site.candidate_id,
+            site.fraction,
+          );
+          if (!isCurrent()) return;
+          if (!this.fresh(snapshot.tick, observedAt))
+            outcome = "discarded: naval snapshot changed";
+          else if (!legal) outcome = "discarded: transport no longer legal";
+          else
+            outcome = (await this.navalAdapter.execute(
+              site.candidate_id,
+              site.fraction,
+              isCurrent,
+            ))
+              ? "transport boat intent sent"
+              : "boat intent not sent";
         } else if (decision.kind === "land") {
           chosen = offered.land[decision.selected];
           if (!chosen || chosen.kind !== "attack")
