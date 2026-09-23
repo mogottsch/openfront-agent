@@ -90,6 +90,10 @@ function setup({ decision, decideHybrid, propose } = {}) {
     gameId: () => "solo-1",
     mapId: () => "map",
     existingCityTiles: () => [],
+    cityMechanics: () => ({
+      troop_capacity_gain_display: 25000,
+      construction_ticks: 20,
+    }),
     decideLand: async () => ({ action: "wait", confidence: 1 }),
     decideHybrid: async (input, signal) => {
       calls.push({ kind: "jev", input });

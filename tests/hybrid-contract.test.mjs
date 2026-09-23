@@ -58,6 +58,10 @@ test("the real City proposal shape survives strict hybrid validation and maps ba
     snapshot_tick: 100,
     land: observation(8000, 20000, "tribe"),
     building,
+    city_mechanics: {
+      troop_capacity_gain_display: 25000,
+      construction_ticks: 20,
+    },
     plan: null,
   };
   const request = buildHybridRequest(input);

@@ -25,6 +25,10 @@ function hybridInput() {
     game_id: "solo-1",
     snapshot_tick: 100,
     land: observation(8000, 20000, "tribe"),
+    city_mechanics: {
+      troop_capacity_gain_display: 25000,
+      construction_ticks: 20,
+    },
     plan: null,
     building: {
       snapshot_id,

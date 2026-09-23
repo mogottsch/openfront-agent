@@ -40,7 +40,14 @@ const omissionKeys = [
 
 export function validateHybridInput(input) {
   if (
-    !only(input, ["game_id", "snapshot_tick", "land", "building", "plan"]) ||
+    !only(input, [
+      "game_id",
+      "snapshot_tick",
+      "land",
+      "building",
+      "city_mechanics",
+      "plan",
+    ]) ||
     !id(input.game_id) ||
     !integer(input.snapshot_tick) ||
     (input.plan !== null &&
@@ -55,6 +62,14 @@ export function validateHybridInput(input) {
     throw new Error("Invalid hybrid decision input");
   }
   const land = validateObservation(input.land);
+  const mechanics = input.city_mechanics;
+  if (
+    !only(mechanics, ["troop_capacity_gain_display", "construction_ticks"]) ||
+    !integer(mechanics.troop_capacity_gain_display) ||
+    mechanics.troop_capacity_gain_display === 0 ||
+    !integer(mechanics.construction_ticks, 60_000)
+  )
+    throw new Error("Invalid City mechanics facts");
   const b = input.building;
   if (
     !only(b, [
@@ -199,6 +214,11 @@ export function hybridChoices(input) {
       candidate_id: c.id,
       cost_gold: c.cost_gold,
       gold_after_estimate: c.gold_after_estimate,
+      troop_capacity_gain_display: o.city_mechanics.troop_capacity_gain_display,
+      capacity_after_estimate:
+        o.land.self.troop_capacity +
+        o.city_mechanics.troop_capacity_gain_display,
+      construction_ticks: o.city_mechanics.construction_ticks,
       gold_spend_percent:
         available > 0n
           ? Number((BigInt(c.cost_gold) * 10_000n) / available) / 100
@@ -226,6 +246,7 @@ export function hybridModelState(input) {
     ...modelState(o.land),
     game_id: o.game_id,
     snapshot_tick: o.snapshot_tick,
+    city_mechanics: o.city_mechanics,
     economy: {
       available_gold: o.building.available_gold,
       cities: o.building.city_counts,

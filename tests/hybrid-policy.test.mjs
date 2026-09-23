@@ -14,6 +14,10 @@ const base = () => ({
   game_id: "solo-1",
   snapshot_tick: 110,
   land: observation(8000, 20000, "tribe"),
+  city_mechanics: {
+    troop_capacity_gain_display: 25000,
+    construction_ticks: 20,
+  },
   plan: {
     game_id: "solo-1",
     plan_version: 3,
@@ -146,6 +150,15 @@ test("branch and independent land/site choices share one bounded Jev request", (
   );
   assert.equal(request.state.economy.offered_city_sites.length, 2);
   assert.equal(request.state.objective.text, input.plan.objective);
+  assert.equal(
+    request.questions.city_site.criteria.build_city_1
+      .troop_capacity_gain_display,
+    25000,
+  );
+  assert.equal(
+    request.questions.city_site.criteria.build_city_1.capacity_after_estimate,
+    45000,
+  );
   assert.ok(!JSON.stringify(request).includes('"tile":'));
 });
 
@@ -284,6 +297,12 @@ test("rejects unsupported, stale, inconsistent, or ambiguous city choices", () =
     },
     (x) => {
       x.plan.source_tick = 120;
+    },
+    (x) => {
+      x.city_mechanics.troop_capacity_gain_display = -1;
+    },
+    (x) => {
+      x.city_mechanics.arbitrary = "not engine derived";
     },
     (x) => {
       x.building.candidates[1].water_ids = ["invented", null];

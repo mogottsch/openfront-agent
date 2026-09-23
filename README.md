@@ -1,6 +1,6 @@
 # OpenFront · Jev + Copilot hybrid agent (in development)
 
-Current playable slice: a local-solo OpenFront bot using TypeSafe Jev to select bounded land actions. **Current experiment: `land-strategy-v4.2`.** Its reviewed land priorities favor growth-preserving wilderness expansion, a 20% tribe ceiling, contested-tribe conquest gold, and patient defense against combined incoming force. This is **not yet a competitive hybrid bot**: an opt-in local Hybrid panel can offer worker-checked City candidates beside land attacks, but no live model-selected City build or Copilot strategic plan has been verified yet. The Copilot planner is an isolated, network-free-tested connector, not connected to gameplay. See the [hybrid spatial design](docs/hybrid-agent-design.html) and [primary-source Jev guidance](docs/jev-founder-guidance.md).
+Current playable slice: a local-solo OpenFront bot using TypeSafe Jev to select bounded land actions. **Current experiment: `land-strategy-v4.2`.** Its reviewed land priorities favor growth-preserving wilderness expansion, a 20% tribe ceiling, contested-tribe conquest gold, and patient defense against combined incoming force. This is **not yet a competitive hybrid bot**: an opt-in local Hybrid panel can offer worker-checked City candidates beside land attacks, but four legal City sites were offered in a bounded real-model match with custom 1M starting gold, but Jev chose wait/save gold rather than build; no City intent/outcome or Copilot strategic plan has been verified yet. The Copilot planner is an isolated, network-free-tested connector, not connected to gameplay. See the [hybrid spatial design](docs/hybrid-agent-design.html) and [primary-source Jev guidance](docs/jev-founder-guidance.md).
 
 ## What Jev sees and can do
 
@@ -59,7 +59,7 @@ Open **http://localhost:9000/** in hardware-accelerated Chrome, start a **Solo**
 - Default: one request per second, measured start-to-start, at most 30 calls per Start. Both are adjustable.
 - At most one in flight. Slow responses delay the next call; missed periods are never queued/caught up.
 - The sidecar independently enforces single-flight and one-second upstream start spacing.
-- Only loopback-hosted development singleplayer is supported. Standard mode emits land attacks only. Opt-in Hybrid can additionally emit a normal **City** intent after Jev selects an opaque legal site and the worker revalidates it; no other building types, upgrades, public/private multiplayer, replays, naval actions, diplomacy or attack cancellation are wired yet.
+- Only loopback-hosted development singleplayer is supported. Standard mode emits land attacks only. Opt-in Hybrid is capable of emitting a normal **City** intent after Jev selects an opaque legal site and the worker revalidates it (the live model has not selected one yet); no other building types, upgrades, public/private multiplayer, replays, naval actions, diplomacy or attack cancellation are wired yet.
 - If the sidecar starts after a match, start a new match to load the panel. After a schema/prompt/bridge update, reinstall the bridge if changed, restart the sidecar, and reload the game page. Older schemas are rejected, not guessed.
 
 ## Guards and lifecycle

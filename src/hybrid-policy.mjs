@@ -9,7 +9,7 @@ import {
 } from "../web/hybrid-observation.js";
 import { buildRequest as buildLandRequest, parseDecision } from "./policy.mjs";
 
-export const HYBRID_POLICY_VERSION = "hybrid-branch-v1-proposed";
+export const HYBRID_POLICY_VERSION = "hybrid-branch-v1.1-city-mechanics";
 
 export function buildHybridRequest(input, model = "jev-latest") {
   const clean = validateHybridInput(input);
@@ -20,7 +20,7 @@ export function buildHybridRequest(input, model = "jev-latest") {
       type: "choice",
       instructions: [
         "Choose our immediate action family in OpenFront. Decide among waiting, a normal land attack, and building one City only when offered. Preserve survival and growth while gaining territory and developing our economy; a branch being feasible is not a command to take it.",
-        "The optional objective is a strategic suggestion, not a game rule or legal permission. Use the current reserve, existing attacks, pressure, available gold, offered build sites, and their omitted count. No opponent future moves or unprovided building effects are known.",
+        "The optional objective is a strategic suggestion, not a game rule or legal permission. Use current reserve, existing attacks, pressure, available gold, City site costs and the supplied City troop-capacity benefit. Other future moves and unprovided site effects are unknown; candidate omissions are disclosed.",
         "If choosing a branch, the independently answered land_action or city_site Choice names the actual candidate; either can still choose wait/save gold. Never infer that an option was silently filtered because of strategic priority.",
       ],
       criteria: actions.branch,
@@ -40,7 +40,7 @@ export function buildHybridRequest(input, model = "jev-latest") {
       type: "choice",
       instructions: [
         "Premise: IF we choose city_build, select ONE offered, currently worker-checked City site or save_gold. This question is independent of branch; ignore its answer otherwise.",
-        "Gold is available now, not additional capacity. Each option shows exact cost and estimated gold left. Distances and marginal coverage are geometry, NOT verified City income, trade connectivity, combat coverage, or safety guarantees. Compare offered sites against the optional objective and exposure; if their effects are too uncertain, save gold.",
+        "Gold is available now, not additional capacity. A completed level-1 City increases troop capacity by city_mechanics.troop_capacity_gain_display (display units) after city_mechanics.construction_ticks simulation ticks; it does not directly increase the baseline gold-addition rate. Each option shows its cost, gold left and estimated capacity after construction. Site distances and marginal coverage are geometry, NOT verified City income, rail connectivity, combat protection or safety guarantees. Compare offered sites and exposure; save gold if building is not worth its cost now.",
         "Site candidates are bounded and may omit good locations; economy.city_sites_omitted counts unoffered sites. City construction remains subject to a fresh worker check and normal game rules.",
       ],
       criteria: actions.city,

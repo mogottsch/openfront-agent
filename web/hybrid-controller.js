@@ -24,6 +24,7 @@ export class HybridController extends LandController {
       gameId,
       mapId,
       existingCityTiles,
+      cityMechanics,
       cityScanIntervalMs = 15000,
       onUpdate = () => {},
       ...clock
@@ -37,6 +38,7 @@ export class HybridController extends LandController {
       typeof gameId !== "function" ||
       typeof mapId !== "function" ||
       typeof existingCityTiles !== "function" ||
+      typeof cityMechanics !== "function" ||
       !Number.isInteger(cityScanIntervalMs) ||
       cityScanIntervalMs < 5000
     ) {
@@ -47,6 +49,7 @@ export class HybridController extends LandController {
     this.gameId = gameId;
     this.mapId = mapId;
     this.existingCityTiles = existingCityTiles;
+    this.cityMechanics = cityMechanics;
     this.cityScanIntervalMs = cityScanIntervalMs;
     this.nextCityScanAt = 0;
     this.cityProposal = null;
@@ -144,6 +147,7 @@ export class HybridController extends LandController {
             snapshot_tick: snapshot.tick,
             land,
             building: this.cityProposal,
+            city_mechanics: this.cityMechanics(),
             plan: null,
           });
         } catch (error) {

@@ -93,11 +93,11 @@ export function mount(connection) {
       $("limit").disabled = event.running;
     }
     if (event.state) {
-      const { self, border, neighbors, economy } = event.state;
+      const { self, border, neighbors, economy, city_mechanics } = event.state;
       $("state").textContent =
         `Troops ${self.troops}/${self.troop_capacity} (${self.reserve_percent}%)\nBorder: ${Math.round(border.wilderness_share * 100)}% wilderness, ${Math.round(border.player_share * 100)}% players\nNeighbors: ${neighbors.length} · incoming: ${self.active_incoming_troops}\nAlready committed: ${self.committed_outgoing_troops}` +
         (economy
-          ? `\nGold: ${economy.available_gold} · Cities: ${economy.cities.owned ?? "?"} · City sites: ${economy.city_sites_offered} offered / ${economy.city_sites_omitted} omitted`
+          ? `\nGold: ${economy.available_gold} · Cities: ${economy.cities.owned ?? "?"} · City sites: ${economy.city_sites_offered} offered / ${economy.city_sites_omitted} omitted · City cap gain: ${city_mechanics.troop_capacity_gain_display}`
           : "");
       $("payload").textContent = JSON.stringify(
         { state: event.state, actions: event.actions },
@@ -149,6 +149,14 @@ export function mount(connection) {
                 .myPlayer()
                 .units("City")
                 .map((unit) => unit.tile()),
+            cityMechanics: () => ({
+              troop_capacity_gain_display: Math.floor(
+                connection.game.config().cityTroopIncrease() / 10,
+              ),
+              construction_ticks:
+                connection.game.config().unitInfo("City")
+                  .constructionDuration ?? 0,
+            }),
             onUpdate,
           },
         )
