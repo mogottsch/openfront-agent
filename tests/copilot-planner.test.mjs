@@ -5,7 +5,15 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { tmpdir } from 'node:os';
 import { CopilotClient, CopilotSession } from '@github/copilot-sdk';
-import { createCopilotPlanner, validatePlan } from '../src/copilot-planner.mjs';
+import { createCopilotPlanner, validatePlan, CopilotPhaseError,
+  COPILOT_FAILURE_STAGES } from '../src/copilot-planner.mjs';
+
+const phase = (expected) => (error) => {
+  assert.ok(error instanceof CopilotPhaseError);
+  assert.equal(error.failure_stage, expected);
+  assert.ok(COPILOT_FAILURE_STAGES.includes(error.failure_stage));
+  return true;
+};
 
 const snapshot = () => ({
   game_id: 'solo-1', tick: 420, observed_at_ms: 1000,
@@ -99,24 +107,24 @@ test('rejects unsourced, excess, stale and invalid plans, with cleanup', async (
   ];
   for (const reply of invalid) {
     const h = harness({ reply });
-    await assert.rejects(h.plan({ snapshot: snapshot(), getCurrentState: h.getCurrentState }), /Invalid or stale/);
+    await assert.rejects(h.plan({ snapshot: snapshot(), getCurrentState: h.getCurrentState }), phase('validate_plan'));
     assert.deepEqual(h.calls.slice(-2), ['disconnect', 'stop']);
   }
   const h = harness({ reply: 'not json' });
-  await assert.rejects(h.plan({ snapshot: snapshot(), getCurrentState: h.getCurrentState }), /invalid JSON/);
+  await assert.rejects(h.plan({ snapshot: snapshot(), getCurrentState: h.getCurrentState }), phase('parse_json'));
   assert.deepEqual(h.calls.slice(-2), ['disconnect', 'stop']);
 });
 
 test('rejects outdated observations without opening a session', async () => {
   const h = harness({ now: () => 5000 });
-  await assert.rejects(h.plan({ snapshot: snapshot(), getCurrentState: h.getCurrentState }), /Stale planner snapshot/);
+  await assert.rejects(h.plan({ snapshot: snapshot(), getCurrentState: h.getCurrentState }), phase('preflight'));
   assert.deepEqual(h.calls, []);
 });
 
 test('rejects changed plan version or game tick before and after inference', async () => {
   const h = harness();
   h.setCurrent({ game_id: 'solo-1', tick: 421, plan_version: 0 });
-  await assert.rejects(h.plan({ snapshot: snapshot(), getCurrentState: h.getCurrentState }), /superseded before/);
+  await assert.rejects(h.plan({ snapshot: snapshot(), getCurrentState: h.getCurrentState }), phase('preflight'));
   assert.deepEqual(h.calls, []);
 
   const after = harness();
@@ -125,25 +133,25 @@ test('rejects changed plan version or game tick before and after inference', asy
   await assert.rejects(originalCreateClient({ snapshot: snapshot(), getCurrentState: () => {
     reads++;
     return { game_id: 'solo-1', tick: reads === 1 ? 420 : 441, plan_version: 0 };
-  } }), /superseded during/);
+  } }), phase('postflight_freshness'));
   assert.deepEqual(after.calls.slice(-2), ['disconnect', 'stop']);
 
   const version = harness();
   let seen = 0;
   await assert.rejects(version.plan({ snapshot: snapshot(), getCurrentState: () =>
-    ({ game_id: 'solo-1', tick: 420, plan_version: seen++ ? 1 : 0 }) }), /superseded during/);
+    ({ game_id: 'solo-1', tick: 420, plan_version: seen++ ? 1 : 0 }) }), phase('postflight_freshness'));
 });
 
 test('missing fresh-state callback fails before opening a client', async () => {
   const h = harness();
-  await assert.rejects(h.plan({ snapshot: snapshot() }), /fresh-state callback/);
+  await assert.rejects(h.plan({ snapshot: snapshot() }), phase('preflight'));
   assert.deepEqual(h.calls, []);
 });
 
 test('snapshot is bounded and cannot contain unknown root fields', async () => {
   const h = harness();
-  await assert.rejects(h.plan({ snapshot: { ...snapshot(), private_key: 'do not send' }, getCurrentState: h.getCurrentState }), /Invalid planner snapshot/);
-  await assert.rejects(h.plan({ snapshot: { ...snapshot(), summary: { huge: 'x'.repeat(17000) } }, getCurrentState: h.getCurrentState }), /16 KiB/);
+  await assert.rejects(h.plan({ snapshot: { ...snapshot(), private_key: 'do not send' }, getCurrentState: h.getCurrentState }), phase('preflight'));
+  await assert.rejects(h.plan({ snapshot: { ...snapshot(), summary: { huge: 'x'.repeat(17000) } }, getCurrentState: h.getCurrentState }), phase('preflight'));
   assert.deepEqual(h.calls, []);
 });
 
@@ -158,7 +166,7 @@ test('an SDK failure still disconnects and stops the client', async () => {
     async stop() { calls.push('stop'); },
   }) });
   await assert.rejects(planner({ snapshot: snapshot(), getCurrentState: () =>
-    ({ game_id: 'solo-1', tick: 420, plan_version: 0 }) }), /runtime unavailable/);
+    ({ game_id: 'solo-1', tick: 420, plan_version: 0 }) }), phase('send_and_wait'));
   assert.deepEqual(calls, ['start', 'disconnect', 'stop']);
 });
 
@@ -177,9 +185,9 @@ test('previous plan version increments and is reflected in prompt', async () => 
 test('previous-plan input cannot smuggle extra fields or context across games', async () => {
   const h = harness();
   await assert.rejects(h.plan({ snapshot: snapshot(), previousPlan: { ...answer(), token: 'secret' },
-    getCurrentState: h.getCurrentState }), /Invalid previous plan/);
+    getCurrentState: h.getCurrentState }), phase('preflight'));
   await assert.rejects(h.plan({ snapshot: snapshot(), previousPlan: { ...answer(), game_id: 'another-game' },
-    getCurrentState: h.getCurrentState }), /Invalid previous plan/);
+    getCurrentState: h.getCurrentState }), phase('preflight'));
   assert.deepEqual(h.calls, []);
 });
 
@@ -190,4 +198,70 @@ test('expired previous plan is not forwarded, but its version still protects aga
   h.setCurrent({ game_id: 'solo-1', tick: 425, plan_version: 1 });
   await h.plan({ snapshot: { ...snapshot(), tick: 425 }, previousPlan: old, getCurrentState: h.getCurrentState });
   assert.equal(JSON.parse(h.calls[3][1].prompt).previous_plan, null);
+});
+
+test('fixed SDK phase tags redact upstream errors and preserve cleanup ordering', async () => {
+  for (const failedAt of ['create_client', 'start_client', 'create_session',
+    'send_and_wait', 'parse_json', 'validate_plan', 'postflight_freshness', 'cleanup']) {
+    const calls = [];
+    let reads = 0;
+    const secret = `raw-secret-${failedAt}`;
+    const client = {
+      async start() { calls.push('start'); if (failedAt === 'start_client') throw new Error(secret); },
+      async createSession() {
+        calls.push('session');
+        if (failedAt === 'create_session') throw new Error(secret);
+        return {
+          async sendAndWait() {
+            calls.push('send');
+            if (failedAt === 'send_and_wait') throw new Error(secret);
+            if (failedAt === 'parse_json') return { data: { content: `{${secret}` } };
+            if (failedAt === 'validate_plan') return { data: { content: JSON.stringify({ ...answer(), objective: '' }) } };
+            return { data: { content: JSON.stringify(answer()) } };
+          },
+          async disconnect() { calls.push('disconnect'); if (failedAt === 'cleanup') throw new Error(secret); },
+        };
+      },
+      async stop() { calls.push('stop'); },
+    };
+    const planner = createCopilotPlanner({ model: 'mock', now: () => 1100,
+      createClient: async () => {
+        calls.push('create');
+        if (failedAt === 'create_client') throw new Error(secret);
+        return client;
+      } });
+    await assert.rejects(planner({ snapshot: snapshot(), getCurrentState: () => ({
+      game_id: 'solo-1', tick: failedAt === 'postflight_freshness' && reads++ ? 441 : 420,
+      plan_version: 0,
+    }) }), (error) => {
+      phase(failedAt)(error);
+      assert.equal(error.cause, undefined);
+      assert.ok(!String(error).includes(secret));
+      assert.ok(!JSON.stringify(error).includes(secret));
+      return true;
+    });
+    if (failedAt !== 'create_client') assert.equal(calls.at(-1), 'stop');
+  }
+});
+
+test('cleanup cannot replace the first failed phase; only fixed auth/timeout metadata survives', async () => {
+  const secret = 'raw-secret-provider-token';
+  const auth = Object.assign(new Error(secret), { status: 401 });
+  const client = {
+    async start() {},
+    async createSession() { return {
+      async sendAndWait() { throw auth; },
+      async disconnect() { throw new Error(secret); },
+    }; },
+    async stop() { throw new Error(secret); },
+  };
+  const planner = createCopilotPlanner({ model: 'mock', now: () => 1100,
+    createClient: async () => client });
+  await assert.rejects(planner({ snapshot: snapshot(), getCurrentState: () =>
+    ({ game_id: 'solo-1', tick: 420, plan_version: 0 }) }), (error) => {
+    phase('send_and_wait')(error);
+    assert.equal(error.status, 401);
+    assert.ok(!JSON.stringify(error).includes(secret));
+    return true;
+  });
 });

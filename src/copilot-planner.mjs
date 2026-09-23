@@ -33,6 +33,35 @@ export const PLAN_SCHEMA = Object.freeze({
   },
 });
 
+export const COPILOT_FAILURE_STAGES = Object.freeze([
+  'preflight', 'create_client', 'start_client', 'create_session',
+  'build_prompt', 'send_and_wait', 'parse_json', 'validate_plan',
+  'postflight_freshness', 'cleanup', 'unexpected',
+]);
+
+export class CopilotPhaseError extends Error {
+  constructor(stage, original) {
+    if (!COPILOT_FAILURE_STAGES.includes(stage)) throw new Error('Invalid Copilot phase');
+    // Never retain raw error messages, causes, provider bodies or credentials.
+    super(`Copilot planner failed (${stage})`);
+    this.name = 'CopilotPhaseError';
+    this.failure_stage = stage;
+    const status = Number(original?.status ?? original?.statusCode);
+    if (status === 401 || status === 403) this.status = status;
+    if (['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'ERR_MODULE_NOT_FOUND',
+      'MODULE_NOT_FOUND'].includes(original?.code)) this.code = original.code;
+    if (original?.name === 'TimeoutError') this.diagnostic_kind = 'timeout';
+    if (original?.name === 'AuthenticationError') this.diagnostic_kind = 'auth';
+  }
+}
+
+const atPhase = async (stage, fn) => {
+  try { return await fn(); } catch (error) { throw new CopilotPhaseError(stage, error); }
+};
+const atPhaseSync = (stage, fn) => {
+  try { return fn(); } catch (error) { throw new CopilotPhaseError(stage, error); }
+};
+
 function validateSnapshot(snapshot) {
   if (!keysAre(snapshot, ['game_id', 'tick', 'observed_at_ms', 'region_ids', 'summary']) ||
       !text(snapshot.game_id, 100) || !integer(snapshot.tick) ||
@@ -93,69 +122,90 @@ export function createCopilotPlanner({
   }
 
   return async function plan({ snapshot, previousPlan = null, getCurrentState }) {
-    const snapshotJson = validateSnapshot(snapshot);
-    if (typeof getCurrentState !== 'function') throw new Error('A fresh-state callback is required');
-    const previousVersion = previousPlan === null ? 0 : previousPlan.plan_version;
-    if (!integer(previousVersion)) throw new Error('Invalid previous plan version');
-    if (previousPlan !== null) {
-      if (previousVersion === 0 || !Array.isArray(previousPlan.region_priorities)) throw new Error('Invalid previous plan');
-      // Validate before serializing: a caller must not smuggle arbitrary fields
-      // (including secrets) into a previous plan forwarded to Copilot.
-      try {
-        validatePlan(previousPlan, {
-          snapshot: {
-            game_id: snapshot.game_id, tick: previousPlan.source_tick,
-            region_ids: previousPlan.region_priorities.map((entry) => entry?.region_id),
-          },
-          previousVersion: previousVersion - 1, maxPlanTicks,
-        });
-      } catch { throw new Error('Invalid previous plan'); }
-      if (previousPlan.source_tick > snapshot.tick) throw new Error('Previous plan comes from a future tick');
-    }
-    if (now() < snapshot.observed_at_ms || now() - snapshot.observed_at_ms > maxSnapshotAgeMs) {
-      throw new Error('Stale planner snapshot');
-    }
-    const current = getCurrentState();
-    if (!keysAre(current, ['game_id', 'tick', 'plan_version']) || current.game_id !== snapshot.game_id ||
-        current.tick !== snapshot.tick || current.plan_version !== previousVersion) {
-      throw new Error('Planner snapshot superseded before request');
-    }
+    const { snapshotJson, previousVersion } = atPhaseSync('preflight', () => {
+      const snapshotJson = validateSnapshot(snapshot);
+      if (typeof getCurrentState !== 'function') throw new Error('A fresh-state callback is required');
+      const previousVersion = previousPlan === null ? 0 : previousPlan.plan_version;
+      if (!integer(previousVersion)) throw new Error('Invalid previous plan version');
+      if (previousPlan !== null) {
+        if (previousVersion === 0 || !Array.isArray(previousPlan.region_priorities)) throw new Error('Invalid previous plan');
+        // An earlier plan cannot smuggle arbitrary fields into the next prompt.
+        try {
+          validatePlan(previousPlan, {
+            snapshot: { game_id: snapshot.game_id, tick: previousPlan.source_tick,
+              region_ids: previousPlan.region_priorities.map((entry) => entry?.region_id) },
+            previousVersion: previousVersion - 1, maxPlanTicks,
+          });
+        } catch { throw new Error('Invalid previous plan'); }
+        if (previousPlan.source_tick > snapshot.tick) throw new Error('Previous plan comes from a future tick');
+      }
+      if (now() < snapshot.observed_at_ms || now() - snapshot.observed_at_ms > maxSnapshotAgeMs)
+        throw new Error('Stale planner snapshot');
+      const current = getCurrentState();
+      if (!keysAre(current, ['game_id', 'tick', 'plan_version']) || current.game_id !== snapshot.game_id ||
+          current.tick !== snapshot.tick || current.plan_version !== previousVersion)
+        throw new Error('Planner snapshot superseded before request');
+      return { snapshotJson, previousVersion };
+    });
 
     let client;
     let session;
+    let result;
+    let failure = null;
     try {
-      client = await createClient();
-      await client.start();
-      session = await client.createSession({
+      client = await atPhase('create_client', () => createClient());
+      await atPhase('start_client', () => client.start());
+      session = await atPhase('create_session', () => client.createSession({
         model, availableTools: [],
         // Defense in depth even if runtime defaults change; no CLI/shell/files/web tools.
         onPermissionRequest: () => ({ kind: 'reject', feedback: 'Planner has no tool permissions.' }),
         hooks: { onPreToolUse: () => ({ permissionDecision: 'deny' }) },
-      });
-      const prompt = JSON.stringify({
+      }));
+      const prompt = atPhaseSync('build_prompt', () => JSON.stringify({
         task: 'Propose one short-lived strategic objective from only the supplied approved state. Return only JSON conforming to responseSchema. No commands, tools or executable actions.',
         state: JSON.parse(snapshotJson),
         previous_plan: previousPlan?.expires_tick > snapshot.tick ? previousPlan : null,
         expected_plan_version: previousVersion + 1, max_expires_tick: snapshot.tick + maxPlanTicks,
+      }));
+      // SDK structured output is preview; independently validate the result.
+      const response = await atPhase('send_and_wait', () =>
+        session.sendAndWait({ prompt, responseSchema: PLAN_SCHEMA }, timeoutMs));
+      const candidate = atPhaseSync('parse_json', () => {
+        const raw = response?.data?.content;
+        if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > 8192)
+          throw new Error('Missing or oversized Copilot response');
+        return JSON.parse(raw);
       });
-      // responseSchema is the official SDK's structured-output preview; still
-      // independently parse and validate because typed JSON is not permission to act.
-      const response = await session.sendAndWait({ prompt, responseSchema: PLAN_SCHEMA }, timeoutMs);
-      const raw = response?.data?.content;
-      if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > 8192) throw new Error('Missing or oversized Copilot response');
-      let candidate;
-      try { candidate = JSON.parse(raw); } catch { throw new Error('Copilot returned invalid JSON'); }
-      validatePlan(candidate, { snapshot, previousVersion, maxPlanTicks });
-      const fresh = getCurrentState();
-      if (!keysAre(fresh, ['game_id', 'tick', 'plan_version']) || fresh.game_id !== snapshot.game_id ||
-          !integer(fresh.tick) || fresh.tick < snapshot.tick || fresh.tick > snapshot.tick + maxTickLag ||
-          fresh.tick >= candidate.expires_tick || fresh.plan_version !== previousVersion ||
-          now() < snapshot.observed_at_ms || now() - snapshot.observed_at_ms > maxSnapshotAgeMs) {
-        throw new Error('Copilot plan superseded during inference');
-      }
-      return candidate; // Caller must revalidate applicability again before any use.
+      atPhaseSync('validate_plan', () => validatePlan(candidate, { snapshot, previousVersion, maxPlanTicks }));
+      atPhaseSync('postflight_freshness', () => {
+        const fresh = getCurrentState();
+        if (!keysAre(fresh, ['game_id', 'tick', 'plan_version']) || fresh.game_id !== snapshot.game_id ||
+            !integer(fresh.tick) || fresh.tick < snapshot.tick || fresh.tick > snapshot.tick + maxTickLag ||
+            fresh.tick >= candidate.expires_tick || fresh.plan_version !== previousVersion ||
+            now() < snapshot.observed_at_ms || now() - snapshot.observed_at_ms > maxSnapshotAgeMs)
+          throw new Error('Copilot plan superseded during inference');
+      });
+      result = candidate;
+    } catch (error) {
+      failure = error instanceof CopilotPhaseError ? error : new CopilotPhaseError('unexpected', error);
     } finally {
-      try { await session?.disconnect(); } finally { await client?.stop(); }
+      // Cleanup failures never mask the first failed phase; both resources are
+      // still given a chance to close, and raw cleanup errors are discarded.
+      try {
+        if (session) await session.disconnect();
+      } catch (error) {
+        failure ??= new CopilotPhaseError('cleanup', error);
+      }
+      try {
+        if (client) {
+          const errors = await client.stop();
+          if (Array.isArray(errors) && errors.length) throw new Error('SDK stop reported errors');
+        }
+      } catch (error) {
+        failure ??= new CopilotPhaseError('cleanup', error);
+      }
     }
+    if (failure) throw failure;
+    return result; // Caller must revalidate applicability again before any use.
   };
 }

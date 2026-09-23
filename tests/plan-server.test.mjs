@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createAgentServer } from '../src/server.mjs';
+import { createCopilotPlanner } from '../src/copilot-planner.mjs';
 import { observation } from './fixtures/land.mjs';
 
 const summary = (ids = ['r1']) => ({
@@ -314,6 +315,73 @@ test('SDK failures return only whitelisted reason codes and redact provider/toke
       assert.equal(logs.at(-1).plan_count, 1);
       const visible = JSON.stringify({ response, logs });
       assert.ok(!visible.includes('fake-secret-provider-body'));
+      assert.ok(!visible.includes(token));
+    });
+  }
+});
+
+test('safe phase code survives the real connector boundary without provider text', async (t) => {
+  const cases = [
+    ['preflight', 'stale_heartbeat'],
+    ['create_client', 'sdk_runtime_or_schema'],
+    ['start_client', 'sdk_runtime_or_schema'],
+    ['create_session', 'sdk_runtime_or_schema'],
+    ['send_and_wait', 'unknown'], // cannot infer unsupported schema from generic send failure
+    ['parse_json', 'sdk_runtime_or_schema'],
+    ['validate_plan', 'sdk_runtime_or_schema'],
+    ['postflight_freshness', 'stale_heartbeat'],
+    ['cleanup', 'sdk_runtime_or_schema'],
+  ];
+  for (const [failedAt, reason] of cases) {
+    await t.test(failedAt, async (caseContext) => {
+      let clock = 1000, constructed = 0;
+      const secret = `provider-secret-${failedAt}`;
+      const logs = [];
+      const fakeClient = {
+        async start() { if (failedAt === 'start_client') throw new Error(secret); },
+        async createSession() {
+          if (failedAt === 'create_session') throw new Error(secret);
+          return {
+            async sendAndWait() {
+              if (failedAt === 'send_and_wait') throw new Error(secret);
+              if (failedAt === 'parse_json') return { data: { content: `{${secret}` } };
+              if (failedAt === 'validate_plan') return { data: { content: JSON.stringify({
+                ...fakePlan({ snapshot: { game_id: 'game-1', tick: 100, region_ids: [] }, previousPlan: null }),
+                objective: '',
+              }) } };
+              if (failedAt === 'postflight_freshness') clock = 22_000;
+              return { data: { content: JSON.stringify(fakePlan({
+                snapshot: { game_id: 'game-1', tick: 100, region_ids: [] }, previousPlan: null,
+              })) } };
+            },
+            async disconnect() { if (failedAt === 'cleanup') throw new Error(secret); },
+          };
+        },
+        async stop() {},
+      };
+      const planner = createCopilotPlanner({ model: 'mock', now: () =>
+        failedAt === 'preflight' ? 2_000 : clock,
+      maxSnapshotAgeMs: failedAt === 'preflight' ? 500 : 20_000,
+      maxTickLag: 200,
+      createClient: async () => {
+        constructed++;
+        if (failedAt === 'create_client') throw new Error(secret);
+        return fakeClient;
+      } });
+      const url = await serve(caseContext, { planNow: () => clock, planner,
+        log: async (row) => logs.push(row) });
+      const token = await start(url);
+      const response = await json(url, '/plan', { method: 'POST', body: planBody(100, []), token });
+      assert.notEqual(response.status, 200);
+      assert.equal(response.body.failure_stage, failedAt);
+      assert.equal(response.body.reason_code, reason);
+      assert.equal(response.body.sdk_turn_attempted, failedAt !== 'preflight');
+      assert.equal(response.body.plan_count, 1);
+      assert.equal(constructed, failedAt === 'preflight' ? 0 : 1);
+      assert.equal(logs.at(-1).failure_stage, failedAt);
+      assert.equal(logs.at(-1).reason_code, reason);
+      const visible = JSON.stringify({ response, logs });
+      assert.ok(!visible.includes(secret));
       assert.ok(!visible.includes(token));
     });
   }
