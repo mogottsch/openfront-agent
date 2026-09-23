@@ -9,12 +9,27 @@ import {
   OBSERVATION_ERROR,
   validateObservation,
 } from "./policy.mjs";
+import {
+  buildHybridRequest,
+  parseHybridDecision,
+  HYBRID_POLICY_VERSION,
+} from "./hybrid-policy.mjs";
+import { validateHybridInput } from "../web/hybrid-observation.js";
 
 const publicFiles = new Map([
   ["/agent.js", new URL("../web/agent.js", import.meta.url)],
   ["/controller.js", new URL("../web/controller.js", import.meta.url)],
   ["/observation.js", new URL("../web/observation.js", import.meta.url)],
   ["/game-adapter.js", new URL("../web/game-adapter.js", import.meta.url)],
+  [
+    "/hybrid-observation.js",
+    new URL("../web/hybrid-observation.js", import.meta.url),
+  ],
+  ["/spatial-map.js", new URL("../web/spatial-map.js", import.meta.url)],
+  [
+    "/building-adapter.js",
+    new URL("../web/building-adapter.js", import.meta.url),
+  ],
 ]);
 
 export function createAgentServer({
@@ -63,6 +78,7 @@ export function createAgentServer({
         keyConfigured: Boolean(apiKey),
         model,
         policy: POLICY_VERSION,
+        hybridPolicy: HYBRID_POLICY_VERSION,
       });
     }
     if (req.method === "GET" && publicFiles.has(pathname)) {
@@ -77,7 +93,8 @@ export function createAgentServer({
         return send(500, { error: "Could not load agent module" });
       }
     }
-    if (req.method !== "POST" || pathname !== "/decision")
+    const hybrid = pathname === "/hybrid-decision";
+    if (req.method !== "POST" || (!hybrid && pathname !== "/decision"))
       return send(404, { error: "Not found" });
     if (!(req.headers["content-type"] ?? "").startsWith("application/json"))
       return send(415, { error: "JSON required" });
@@ -94,12 +111,19 @@ export function createAgentServer({
         if (length > 65536) return send(413, { error: "Request too large" });
         chunks.push(chunk);
       }
-      const observation = validateObservation(
-        JSON.parse(Buffer.concat(chunks).toString()),
-      );
+      const supplied = JSON.parse(Buffer.concat(chunks).toString());
+      // A browser may never claim an authoritative Copilot plan. The future
+      // planner will inject an independently validated server-owned plan here.
+      if (hybrid && supplied?.plan !== null)
+        return send(400, { error: "Browser-supplied plans are not accepted" });
+      const observation = hybrid
+        ? validateHybridInput(supplied)
+        : validateObservation(supplied);
       // Candidate limits can fail even for a valid observation. Reject before
       // acquiring the single-flight lock, so this cannot strand the server busy.
-      request = buildRequest(observation, model);
+      request = hybrid
+        ? buildHybridRequest(observation, model)
+        : buildRequest(observation, model);
     } catch {
       return send(400, { error: OBSERVATION_ERROR });
     }
@@ -137,17 +161,17 @@ export function createAgentServer({
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`TypeSafe HTTP ${response.status}`);
+      const answer = await response.json();
       const decision = {
-        ...parseDecision(
-          await response.json(),
-          request.questions.action.criteria,
-        ),
+        ...(hybrid
+          ? parseHybridDecision(answer, request)
+          : parseDecision(answer, request.questions.action.criteria)),
         latencyMs: Math.round(performance.now() - start),
       };
       await log({
         timestamp: new Date().toISOString(),
         requestStartedAt,
-        policy: POLICY_VERSION,
+        policy: hybrid ? HYBRID_POLICY_VERSION : POLICY_VERSION,
         request,
         decision,
       });
