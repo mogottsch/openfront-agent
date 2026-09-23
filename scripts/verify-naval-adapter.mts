@@ -6,6 +6,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createNavalAdapter } from "../web/naval-adapter.js";
+import { observeCore } from "./benchmark-jev-observation.mjs";
+import { validateHybridInput } from "../web/hybrid-observation.js";
 
 const root = resolve(process.env.OPENFRONT_DIR || "../OpenFrontIO");
 const load = (p: string) => import(pathToFileURL(resolve(root, p)).href);
@@ -98,6 +100,23 @@ const proposal = await adapter.propose({ mapId: "onion", maxCandidates: 24,
   maxCoastTiles: 512, maxPairs: 2048, maxWorkerChecks: 48 });
 if (!proposal.candidates.length) throw new Error(
   `Real Onion adapter found no worker-checked candidates: ${JSON.stringify(proposal.coverage)}`);
+// Snapshot the approved land fields from the SAME actual game tick, before
+// mock boat emission. No reconstructed enemy/attack metadata or fake actions.
+const landSnapshot = observeCore(game, player);
+if (landSnapshot.tick !== proposal.source_tick || proposal.current_tick !== landSnapshot.tick)
+  throw new Error("Naval and land observations did not share an engine tick");
+const hybridInput = validateHybridInput({
+  game_id: gameID,
+  snapshot_tick: landSnapshot.tick,
+  land: landSnapshot.observation,
+  building: null, // no City site scan was performed in this isolated test
+  city_mechanics: {
+    troop_capacity_gain_display: config.cityTroopIncrease() / 10,
+    construction_ticks: config.unitInfo(UnitType.City).constructionDuration,
+  },
+  plan: null,
+  naval: proposal, // EXACT adapter.propose() result, no invented candidates
+});
 // EXPLICIT MOCK Choice, not Jev: first worker-checked wilderness candidate.
 const chosen = proposal.candidates.find((c: any) => c.target_type === "wilderness");
 if (!chosen) throw new Error("No wilderness candidate in bounded real-engine proposal");
@@ -115,9 +134,9 @@ const before = { tick: game.ticks(), tiles: player.numTilesOwned(),
   troops: player.troops(), gold: player.gold().toString(),
   ports: player.unitCount(UnitType.Port),
   chosenCandidate: chosen,
-  proposal: { snapshot_id: proposal.snapshot_id, source_tick: proposal.source_tick,
-    offered: proposal.candidates.length, coverage: proposal.coverage,
-    omissions: proposal.omissions },
+  proposal, // full exact proposal: all candidates, boats, coverage and omissions
+  land_observation: landSnapshot.observation,
+  hybrid_input: hybridInput, // strictly validated v4.2 request shape at this tick
   mockChoice: { source: "explicit-mock", candidate_id: chosen.id, fraction },
   workerSource: { x: game.x(predictedSource), y: game.y(predictedSource) },
   emitted: { type: emitted.type, dst: { x: game.x(emitted.dst), y: game.y(emitted.dst) },
