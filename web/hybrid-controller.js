@@ -25,6 +25,7 @@ export class HybridController extends LandController {
       mapId,
       existingCityTiles,
       cityMechanics,
+      planClient = null,
       cityScanIntervalMs = 15000,
       onUpdate = () => {},
       ...clock
@@ -39,6 +40,10 @@ export class HybridController extends LandController {
       typeof mapId !== "function" ||
       typeof existingCityTiles !== "function" ||
       typeof cityMechanics !== "function" ||
+      (planClient !== null &&
+        !["plan", "heartbeat", "getPlan", "stop"].every(
+          (name) => typeof planClient[name] === "function",
+        )) ||
       !Number.isInteger(cityScanIntervalMs) ||
       cityScanIntervalMs < 5000
     ) {
@@ -51,16 +56,40 @@ export class HybridController extends LandController {
     this.existingCityTiles = existingCityTiles;
     this.cityMechanics = cityMechanics;
     this.cityScanIntervalMs = cityScanIntervalMs;
+    this.planClient = planClient;
+    this.planAttempted = false;
+    this.planFailed = false;
+    this.planAbort = null;
     this.nextCityScanAt = 0;
     this.cityProposal = null;
     this.cityProposalAt = -Infinity;
+  }
+
+  setPlanClient(client) {
+    if (
+      this.running ||
+      !client ||
+      !["plan", "heartbeat", "getPlan", "stop"].every(
+        (name) => typeof client[name] === "function",
+      )
+    )
+      throw new Error("Cannot change the planner during an active run");
+    this.planClient = client;
   }
 
   start(settings) {
     this.cityProposal = null;
     this.cityProposalAt = -Infinity;
     this.nextCityScanAt = 0;
+    this.planAttempted = false;
+    this.planFailed = false;
     super.start(settings);
+  }
+
+  stop(status = "Stopped") {
+    this.planAbort?.abort();
+    this.planClient?.stop();
+    super.stop(status);
   }
 
   async scanCitySites(isCurrent) {
@@ -131,6 +160,52 @@ export class HybridController extends LandController {
       }
       const land = validateObservation(snapshot.observation);
       const landActions = buildActions(land);
+      let activePlan = null;
+      if (this.planClient && !this.planAttempted) {
+        this.planAttempted = true;
+        const controller = new AbortController();
+        this.planAbort = controller;
+        this.onUpdate({
+          status: "Asking Copilot for an objective (Jev paused)",
+          planStatus: "Planning once for this Start session",
+        });
+        try {
+          const plan = await this.planClient.plan(
+            { tick: snapshot.tick, land },
+            controller.signal,
+          );
+          if (!isCurrent()) return;
+          this.onUpdate({
+            planStatus: `Copilot plan v${plan.plan_version}: ${plan.objective}`,
+          });
+        } catch (error) {
+          if (!isCurrent()) return;
+          this.planClient.stop();
+          this.planFailed = true;
+          this.onUpdate({
+            planStatus: `Copilot unavailable; Jev continues without a plan: ${error.message}`,
+          });
+        } finally {
+          if (this.planAbort === controller) this.planAbort = null;
+        }
+        if (!this.fresh(snapshot.tick, observedAt)) {
+          this.onUpdate({ status: "Reobserving after Copilot plan delay" });
+          return;
+        }
+      }
+      if (this.planClient && !this.planFailed) {
+        // Heartbeats keep an active server-owned plan fresh on land-only ticks.
+        // The plan client also heartbeats during the long planning request.
+        try {
+          await this.planClient.heartbeat();
+          activePlan = await this.planClient.getPlan();
+        } catch (error) {
+          throw new Error(
+            `Could not verify Copilot plan status: ${error.message}`,
+          );
+        }
+        if (!isCurrent() || !this.fresh(snapshot.tick, observedAt)) return;
+      }
       let input = null;
       // The City proposal is valid only within its own 2s / 20-tick window.
       // If none exists, the panel explicitly reports land-only rather than
@@ -205,7 +280,7 @@ export class HybridController extends LandController {
           game_id: input.game_id,
           snapshot_tick: snapshot.tick,
           building_snapshot_id: input.building.snapshot_id,
-          plan_version: null,
+          plan_version: activePlan?.plan_version ?? null,
         };
         if (
           !decision.context ||

@@ -53,7 +53,7 @@ function siteProposal() {
     },
   };
 }
-function setup({ decision, decideHybrid, propose } = {}) {
+function setup({ decision, decideHybrid, propose, planClient } = {}) {
   let time = 0;
   const status = { ready: true, ended: false, tick: 100 };
   const land = observation(8000, 20000, "tribe");
@@ -94,6 +94,7 @@ function setup({ decision, decideHybrid, propose } = {}) {
       troop_capacity_gain_display: 25000,
       construction_ticks: 20,
     }),
+    planClient: planClient ?? null,
     decideLand: async () => ({ action: "wait", confidence: 1 }),
     decideHybrid: async (input, signal) => {
       calls.push({ kind: "jev", input });
@@ -143,6 +144,83 @@ function setup({ decision, decideHybrid, propose } = {}) {
     },
   };
 }
+
+test("optional Copilot plan is requested once before Jev and its active version binds the City choice", async () => {
+  const calls = [];
+  const plan = {
+    objective: "Develop the city capacity",
+    plan_version: 1,
+    source_tick: 100,
+    expires_tick: 400,
+  };
+  const planner = {
+    plan: async () => {
+      calls.push("plan");
+      return plan;
+    },
+    heartbeat: async () => {
+      calls.push("heartbeat");
+      return true;
+    },
+    getPlan: async () => {
+      calls.push("status");
+      return plan;
+    },
+    stop: () => calls.push("stop"),
+  };
+  const s = setup({
+    planClient: planner,
+    decision: {
+      branch: "city_build",
+      kind: "city",
+      selected: "build_city_1",
+      candidate_id: "solo-1/map@100#1:c1",
+      context: {
+        game_id: "solo-1",
+        snapshot_tick: 100,
+        building_snapshot_id: "solo-1/map@100#1",
+        plan_version: 1,
+      },
+    },
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.deepEqual(calls.slice(0, 3), ["stop", "plan", "heartbeat"]);
+  assert.ok(calls.includes("status"));
+  assert.deepEqual(s.sends, [{ kind: "city", id: "solo-1/map@100#1:c1" }]);
+  assert.ok(s.updates.some((x) => x.planStatus?.includes("Copilot plan v1")));
+});
+
+test("Stop during slow Copilot planning prevents late Jev inference and City actions", async () => {
+  let release;
+  const seen = [];
+  const planner = {
+    plan: () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    heartbeat: async () => true,
+    getPlan: async () => null,
+    stop: () => seen.push("stop"),
+  };
+  const s = setup({ planClient: planner });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  s.controller.stop("Stopped by user");
+  release({
+    objective: "late",
+    plan_version: 1,
+    source_tick: 100,
+    expires_tick: 400,
+  });
+  await setImmediate();
+  assert.ok(seen.includes("stop"));
+  assert.equal(
+    s.calls.some((x) => x.kind === "jev"),
+    false,
+  );
+  assert.deepEqual(s.sends, []);
+});
 
 test("opt-in hybrid chooses the exact opaque City candidate and emits one callback", async () => {
   const s = setup();

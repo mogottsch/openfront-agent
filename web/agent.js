@@ -2,6 +2,7 @@ import { LandController } from "./controller.js";
 import { HybridController } from "./hybrid-controller.js";
 import { createGameAdapter } from "./game-adapter.js";
 import { createBuildingAdapter } from "./building-adapter.js";
+import { createPlanClient } from "./plan-client.js";
 
 export function mount(connection) {
   const adapter = createGameAdapter(connection);
@@ -29,7 +30,8 @@ export function mount(connection) {
         <label>Calls <input id="limit" aria-label="Request limit" type="number" min="1" max="300" value="30"></label>
       </div>
       <button id="start">Start Jev</button> <button id="hybrid" disabled>Start Hybrid</button> <button id="stop" disabled>Stop Jev</button>
-      <p id="hybrid-status"><small>Hybrid City experiment: checking server opt-in (City scans at most once per 15s; no Copilot calls yet).</small></p>
+      <p id="hybrid-status"><small>Hybrid City experiment: checking local opt-in and planner availability.</small></p>
+      <p id="planner-status"><small>Copilot planner inactive until Start Hybrid.</small></p>
       <p id="status" role="status">Stopped — no API calls until Start.</p>
       <p id="mode"></p>
       <details><summary>Latest City scan (geometry / legality / omissions)</summary><pre id="scan">Not scanned yet.</pre></details>
@@ -77,6 +79,7 @@ export function mount(connection) {
     if (disposed) return;
     if (event.status) $("status").textContent = event.status;
     if (event.mode) $("mode").textContent = `Decision scope: ${event.mode}`;
+    if (event.planStatus) $("planner-status").textContent = event.planStatus;
     if (event.cityScan)
       $("scan").textContent = JSON.stringify(event.cityScan, null, 2);
     if (event.running !== undefined) {
@@ -161,16 +164,27 @@ export function mount(connection) {
           },
         )
       : null;
+  const planClient = hybridController
+    ? createPlanClient({
+        baseUrl: new URL("/", import.meta.url),
+        read: connection.read,
+        getGameId: () => connection.game.gameID(),
+        getGold: () => connection.game.myPlayer().gold().toString(),
+        getToken: () => sessionToken,
+      })
+    : null;
   // Health is read-only; neither controller starts itself or makes a model call.
   void fetch(new URL("/health", import.meta.url))
     .then((response) => (response.ok ? response.json() : null))
     .then((health) => {
       if (disposed) return;
       hybridEnabled = Boolean(hybridController && health?.hybridEnabled);
+      if (hybridEnabled && health?.copilotEnabled)
+        hybridController.setPlanClient(planClient);
       $("hybrid").disabled =
         !hybridEnabled || Boolean(activeController?.running);
       $("hybrid-status").textContent = hybridEnabled
-        ? "Hybrid City experiment enabled; no Copilot plan yet. Click Start Hybrid to opt in."
+        ? `Hybrid City experiment enabled; Copilot ${health?.copilotEnabled ? "enabled (opt-in on Start)" : "disabled"}. City scan at most once per 15s.`
         : "Hybrid City experiment disabled in local sidecar (land mode remains available).";
     })
     .catch(() => {
