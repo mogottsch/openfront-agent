@@ -96,8 +96,8 @@ const adapter = createNavalAdapter({ game: facade, read: state,
     return true;
   },
 });
-async function captureHybrid() {
-  const proposal = await adapter.propose({ mapId: "onion", maxCandidates: 24,
+async function captureHybrid(navalAdapter = adapter, maxCandidates = 24) {
+  const proposal = await navalAdapter.propose({ mapId: "onion", maxCandidates,
     maxCoastTiles: 512, maxPairs: 2048, maxWorkerChecks: 48 });
   if (!proposal.candidates.length) throw new Error(
     `Real Onion adapter found no worker-checked candidates: ${JSON.stringify(proposal.coverage)}`);
@@ -131,6 +131,19 @@ if (game.ticks() !== before.tick + regrowTicks || player.units(UnitType.Transpor
 const afterRegrow: any = { ...(await captureHybrid()), noNewHumanIntentTicks: regrowTicks };
 if (afterRegrow.troops <= before.troops)
   throw new Error("No stronger reserve after the bounded no-intent regrowth interval");
+// Independently scan at the SAME tick with the deployed-size eight-candidate
+// bound. A separate adapter instance leaves the original full-11 proposal
+// and its mock-choice permit identity untouched. No candidate truncation.
+const boundedAdapter = createNavalAdapter({ game: facade, read: state,
+  transportUnit: UnitType.TransportShip,
+  sendBoat: () => { throw new Error("Bounded snapshot must not emit an intent"); },
+});
+afterRegrow.bounded8 = await captureHybrid(boundedAdapter, 8);
+if (afterRegrow.bounded8.tick !== afterRegrow.tick ||
+    afterRegrow.bounded8.proposal.candidates.length !== 8 ||
+    afterRegrow.bounded8.proposal.coverage.omitted_count !==
+      afterRegrow.proposal.coverage.total_eligible - 8)
+  throw new Error("Bounded naval proposal was not generated from the same real game state");
 // EXPLICIT MOCK Choice, not Jev: first worker-checked wilderness candidate
 // from the *fresh* post-regrowth proposal (never the stale tick-449 offer).
 const chosen = afterRegrow.proposal.candidates.find((c: any) => c.target_type === "wilderness");
