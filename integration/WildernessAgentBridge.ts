@@ -1,9 +1,10 @@
 // Local experimental bridge owned by ../openfront-agent; not upstream game logic.
 // Filename retained so existing installs can be upgraded in place.
 import { EventBus } from "../core/EventBus";
-import { GameType } from "../core/game/Game";
+import { GameType, UnitType } from "../core/game/Game";
+import { TileRef } from "../core/game/GameMap";
 import { GameUpdateType } from "../core/game/GameUpdates";
-import { SendAttackIntentEvent } from "./Transport";
+import { BuildUnitIntentEvent, SendAttackIntentEvent } from "./Transport";
 import { GameView } from "./view/GameView";
 
 export function attachWildernessAgent(
@@ -48,10 +49,24 @@ export function attachWildernessAgent(
     events.emit(new SendAttackIntentEvent(targetID, troops));
     return true;
   };
+  // This bridge only exposes the City build intent. The still-proposed
+  // building adapter must recheck the real worker and gold before invoking it.
+  const sendBuild = (unit: UnitType, tile: TileRef) => {
+    if (
+      !read().ready ||
+      unit !== UnitType.City ||
+      !Number.isInteger(tile) ||
+      !game.isValidRef(tile)
+    )
+      return false;
+    events.emit(new BuildUnitIntentEvent(unit, tile));
+    return true;
+  };
   const url = "http://127.0.0.1:8788/agent.js";
   void import(/* @vite-ignore */ url)
     .then((module) => {
-      if (!disposed) cleanup = module.mount({ game, read, sendAttack });
+      if (!disposed)
+        cleanup = module.mount({ game, read, sendAttack, sendBuild });
     })
     .catch(() => {
       if (!disposed)
