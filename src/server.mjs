@@ -16,6 +16,8 @@ import {
   HYBRID_POLICY_VERSION,
 } from "./hybrid-policy.mjs";
 import { validateHybridInput } from "../web/hybrid-observation.js";
+import { buildNavalDecomposedRequest, parseNavalDecomposedDecision,
+  NAVAL_DECOMPOSED_POLICY_VERSION } from "./naval-decomposed-policy.mjs";
 import { createCopilotPlanner, hasCopilotServerToken, CopilotPhaseError,
   COPILOT_FAILURE_STAGES } from "./copilot-planner.mjs";
 import { createPlanSession } from "./plan-session.mjs";
@@ -117,6 +119,7 @@ export function createAgentServer({
   minimumIntervalMs = 1000,
   enableHybridDecisions = false,
   enableNavalDecisions = false,
+  enableNavalDecomposedProbe = false,
   requireStartSession = true,
   enableCopilotPlanner = false,
   planner = null, // injectable for network-free tests; never browser-supplied
@@ -182,6 +185,8 @@ export function createAgentServer({
         hybridPolicy: HYBRID_POLICY_VERSION,
         hybridEnabled: enableHybridDecisions,
         navalEnabled: enableHybridDecisions && enableNavalDecisions && requireStartSession,
+        decomposedNavalProbeEnabled: enableHybridDecisions && enableNavalDecisions &&
+          enableNavalDecomposedProbe && requireStartSession,
         plannerEnabled: enableHybridDecisions && plannerReady && requireStartSession,
         plannerStatus: !enableCopilotPlanner ? "disabled" :
           !plannerAuthReady ? "token_missing" :
@@ -449,12 +454,13 @@ export function createAgentServer({
         busy = false;
       }
     }
-    const hybrid = pathname === "/hybrid-decision";
+    const decomposedProbe = pathname === "/naval-decomposed-probe";
+    const hybrid = pathname === "/hybrid-decision" || decomposedProbe;
     if (req.method !== "POST" || (!hybrid && pathname !== "/decision"))
       return send(404, { error: "Not found" });
-    // Opt-in only. This is a feature gate, not a proof that the browser's Start
-    // button was clicked; a separate activation session is required before
-    // presenting this experiment as server-verified Start-gated.
+    if (decomposedProbe && (!enableNavalDecomposedProbe || !enableNavalDecisions ||
+        !enableHybridDecisions || !requireStartSession))
+      return send(403, { error: "Decomposed naval probe is disabled" });
     if (hybrid && !enableHybridDecisions)
       return send(403, { error: "Hybrid decision endpoint is disabled" });
     const authorized = requireStartSession ? session : null;
@@ -489,6 +495,9 @@ export function createAgentServer({
       // Naval actions are a separately approved experiment. A present,
       // non-null raw proposal cannot reach TypeSafe without BOTH feature flags
       // and an explicit local hybrid Start, even in legacy test mode.
+      if (decomposedProbe && (!supplied || !Object.hasOwn(supplied, "naval") ||
+          supplied.naval === null))
+        return send(400, { error: "Probe requires a worker-checked naval proposal" });
       if (hybrid && supplied && Object.hasOwn(supplied, "naval") &&
           supplied.naval !== null &&
           (!enableNavalDecisions || !enableHybridDecisions ||
@@ -514,9 +523,10 @@ export function createAgentServer({
         : validateObservation(supplied);
       // Candidate limits can fail even for a valid observation. Reject before
       // acquiring the single-flight lock, so this cannot strand the server busy.
-      request = hybrid
-        ? buildHybridRequest(observation, model)
-        : buildRequest(observation, model);
+      request = decomposedProbe
+        ? buildNavalDecomposedRequest(observation, model)
+        : hybrid ? buildHybridRequest(observation, model)
+          : buildRequest(observation, model);
     } catch {
       return send(400, { error: OBSERVATION_ERROR });
     }
@@ -578,15 +588,18 @@ export function createAgentServer({
       if (!planStillApplicable())
         throw new Error("Planner objective expired during Jev inference");
       const decision = {
-        ...(hybrid
-          ? parseHybridDecision(answer, request)
-          : parseDecision(answer, request.questions.action.criteria)),
+        ...(decomposedProbe
+          ? parseNavalDecomposedDecision(answer, request)
+          : hybrid ? parseHybridDecision(answer, request)
+            : parseDecision(answer, request.questions.action.criteria)),
         latencyMs: Math.round(performance.now() - start),
       };
       await log({
         timestamp: new Date().toISOString(),
         requestStartedAt,
-        policy: hybrid ? HYBRID_POLICY_VERSION : POLICY_VERSION,
+        policy: decomposedProbe ? NAVAL_DECOMPOSED_POLICY_VERSION :
+          hybrid ? HYBRID_POLICY_VERSION : POLICY_VERSION,
+        probe_only: decomposedProbe,
         planProvenance: requestedPlan ? { provider: "official-copilot-sdk",
           promptVersion: COPILOT_PLAN_PROMPT_VERSION,
           version: requestedPlan.plan_version, source_tick: requestedPlan.source_tick } : null,
@@ -598,7 +611,8 @@ export function createAgentServer({
         throw new Error("Start session changed before decision response");
       if (!planStillApplicable())
         throw new Error("Planner objective expired before decision response");
-      if (!res.destroyed) send(200, decision);
+      if (!res.destroyed) send(200, decomposedProbe ?
+        { probe_only: true, intent_emitted: false, decision } : decision);
     } catch (error) {
       // Never relay arbitrary upstream bodies/errors; they may contain request credentials.
       const safeError = /^TypeSafe HTTP \d+$/.test(error.message)
@@ -633,6 +647,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       model: process.env.TYPESAFE_MODEL || "jev-latest",
       enableHybridDecisions: process.env.OPENFRONT_HYBRID_EXPERIMENT === "1",
       enableNavalDecisions: process.env.OPENFRONT_NAVAL_EXPERIMENT === "1",
+      enableNavalDecomposedProbe: process.env.OPENFRONT_DECOMPOSED_NAVAL_PROBE === "1",
       enableCopilotPlanner: process.env.OPENFRONT_COPILOT_PLANNER === "1",
       log: (record) => appendFile(logfile, JSON.stringify(record) + "\n"),
     });
