@@ -33,6 +33,7 @@ export function attachWildernessAgent(
       tick: game.ticks(),
       ready:
         !disposed &&
+        !game.gameOver() &&
         !paused &&
         !game.isCatchingUp() &&
         !game.inSpawnPhase() &&
@@ -45,15 +46,19 @@ export function attachWildernessAgent(
     };
   };
   const sendAttack = (targetID: string | null, troops: number) => {
-    if (!read().ready || !Number.isFinite(troops) || troops < 1) return false;
+    const state = read();
+    if (!state.ready || state.ended || !Number.isFinite(troops) || troops < 1)
+      return false;
     events.emit(new SendAttackIntentEvent(targetID, troops));
     return true;
   };
   // This bridge only exposes the City build intent. The still-proposed
   // building adapter must recheck the real worker and gold before invoking it.
   const sendBuild = (unit: UnitType, tile: TileRef) => {
+    const state = read();
     if (
-      !read().ready ||
+      !state.ready ||
+      state.ended ||
       unit !== UnitType.City ||
       !Number.isInteger(tile) ||
       !game.isValidRef(tile)
