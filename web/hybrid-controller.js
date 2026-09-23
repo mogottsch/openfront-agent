@@ -21,6 +21,7 @@ export class HybridController extends LandController {
     {
       decideLand,
       decideHybrid,
+      decideHybridDecomposed = null,
       gameId,
       mapId,
       existingCityTiles,
@@ -38,6 +39,8 @@ export class HybridController extends LandController {
       !buildingAdapter ||
       typeof decideLand !== "function" ||
       typeof decideHybrid !== "function" ||
+      (decideHybridDecomposed !== null &&
+        typeof decideHybridDecomposed !== "function") ||
       typeof gameId !== "function" ||
       typeof mapId !== "function" ||
       typeof existingCityTiles !== "function" ||
@@ -59,6 +62,7 @@ export class HybridController extends LandController {
     }
     this.buildingAdapter = buildingAdapter;
     this.decideHybrid = decideHybrid;
+    this.decideHybridDecomposed = decideHybridDecomposed;
     this.gameId = gameId;
     this.mapId = mapId;
     this.existingCityTiles = existingCityTiles;
@@ -76,6 +80,14 @@ export class HybridController extends LandController {
     this.nextCityScanAt = 0;
     this.cityProposal = null;
     this.cityProposalAt = -Infinity;
+  }
+
+  setDecomposedNavalDecider(decide) {
+    if (this.running || typeof decide !== "function")
+      throw new Error(
+        "Cannot change naval decision style during an active run",
+      );
+    this.decideHybridDecomposed = decide;
   }
 
   setNavalAdapter(adapter) {
@@ -376,9 +388,14 @@ export class HybridController extends LandController {
       this.lastTick = snapshot.tick;
       this.abort = new AbortController();
       this.count++;
+      const decomposed = Boolean(
+        hybrid && input.naval?.candidates.length && this.decideHybridDecomposed,
+      );
       this.onUpdate({
         status: hybrid
-          ? "Asking Jev: land / City / boat / wait"
+          ? decomposed
+            ? "Asking Jev: branch / boat target / site-specific sizes"
+            : "Asking Jev: land / City / boat / wait"
           : "Asking Jev: land only",
         count: this.count,
       });
@@ -386,7 +403,9 @@ export class HybridController extends LandController {
       this.nextAllowedStart = requestedAt + this.intervalMs;
       wakeAt = this.nextAllowedStart;
       const decision = hybrid
-        ? await this.decideHybrid(input, this.abort.signal)
+        ? decomposed
+          ? await this.decideHybridDecomposed(input, this.abort.signal)
+          : await this.decideHybrid(input, this.abort.signal)
         : await this.decide(land, this.abort.signal);
       if (!isCurrent()) return;
       let outcome = "no-op";

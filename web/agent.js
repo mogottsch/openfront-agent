@@ -195,10 +195,14 @@ export function mount(connection) {
         hybridController.setPlanClient(planClient);
       if (hybridEnabled && health?.navalEnabled && navalAdapter)
         hybridController.setNavalAdapter(navalAdapter);
+      if (hybridEnabled && health?.decomposedNavalLiveEnabled && navalAdapter)
+        hybridController.setDecomposedNavalDecider((state, signal) =>
+          decide("/hybrid-decision-decomposed", state, signal),
+        );
       $("hybrid").disabled =
         !hybridEnabled || Boolean(activeController?.running);
       $("hybrid-status").textContent = hybridEnabled
-        ? `Hybrid enabled; Copilot ${health?.plannerEnabled ? "on" : "off"}, naval ${health?.navalEnabled && navalAdapter ? "on" : "off"}. City/coast scans at most once per 15s.`
+        ? `Hybrid enabled; Copilot ${health?.plannerEnabled ? "on" : "off"}, naval ${health?.navalEnabled && navalAdapter ? "on" : "off"}${health?.decomposedNavalLiveEnabled && navalAdapter ? " (target + per-site size Choices)" : ""}. City/coast scans at most once per 15s.`
         : "Hybrid City experiment disabled in local sidecar (land mode remains available).";
     })
     .catch(() => {

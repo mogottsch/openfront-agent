@@ -122,6 +122,7 @@ function navalProposal() {
 function setup({
   decision,
   decideHybrid,
+  decideHybridDecomposed,
   propose,
   planClient,
   naval,
@@ -188,6 +189,12 @@ function setup({
     planClient: planClient ?? null,
     navalAdapter: navy,
     decideLand: async () => ({ action: "wait", confidence: 1 }),
+    decideHybridDecomposed: decideHybridDecomposed
+      ? async (input, signal) => {
+          calls.push({ kind: "jev-decomposed", input });
+          return decideHybridDecomposed(input, signal);
+        }
+      : null,
     decideHybrid: async (input, signal) => {
       calls.push({ kind: "jev", input });
       if (decideHybrid) return decideHybrid(input, signal);
@@ -296,6 +303,53 @@ test("invented boat size cannot bypass the offered Choice", async () => {
   await setImmediate();
   assert.deepEqual(s.sends, []);
   assert.match(s.updates.at(-1).status, /not an offered target and size/);
+});
+
+test("opt-in target/size route consumes Jev's chosen boat without replacing the flat policy", async () => {
+  const naval = navalProposal();
+  const s = setup({
+    naval,
+    decideHybrid: () => {
+      throw new Error("flat route must not run");
+    },
+    decideHybridDecomposed: () => ({
+      branch: "boat_attack",
+      kind: "boat",
+      selected: "boat_1_10",
+      candidate_id: naval.candidates[0].id,
+      fraction: 0.1,
+      context: {
+        game_id: "solo-1",
+        snapshot_tick: 100,
+        building_snapshot_id: "solo-1/map@100#1",
+        naval_snapshot_id: naval.snapshot_id,
+        plan_version: null,
+      },
+    }),
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.deepEqual(s.sends, [
+    { kind: "boat", id: naval.candidates[0].id, fraction: 0.1 },
+  ]);
+  assert.equal(s.calls.filter((x) => x.kind === "jev-decomposed").length, 1);
+  assert.equal(s.calls.filter((x) => x.kind === "jev").length, 0);
+});
+
+test("decomposed route is never invoked when naval scan fails but City remains legal", async () => {
+  const s = setup({
+    naval: navalProposal(),
+    navalPropose: () => {
+      throw new Error("naval worker unavailable");
+    },
+    decideHybridDecomposed: () => {
+      throw new Error("must not run decomposed");
+    },
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.deepEqual(s.sends, [{ kind: "city", id: "solo-1/map@100#1:c1" }]);
+  assert.equal(s.calls.filter((x) => x.kind === "jev-decomposed").length, 0);
 });
 
 test("naval scan failure cannot conceal a still-valid City action", async () => {
