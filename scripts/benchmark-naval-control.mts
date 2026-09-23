@@ -28,6 +28,7 @@ const fresh = (metadata: any, bytes: Uint8Array) => {
   if (bytes.length !== metadata.width * metadata.height) throw new Error("Bad Onion map binary");
   return new GameMapImpl(metadata.width, metadata.height, new Uint8Array(bytes), metadata.num_land_tiles);
 };
+const boatFractions = [0.1, 0.2, 0.3] as const; // wilderness only; not the tribe action menu
 const coast: [number, number][] = [
   [423, 276], [426, 280], [435, 300], [440, 320],
   [443, 340], [443, 360], [439, 380], [432, 400],
@@ -56,7 +57,8 @@ console.debug = () => {};
 const opts: Options = { smoke: cli.smoke, seeds: cli.seeds, minutes: 5,
   maxTicks: cli.smoke ? 650 : 3050, spawn: [400, 280], output: cli.output };
 
-async function runNaval(seed: string) {
+async function runNaval(seed: string, boatFraction: number) {
+  if (!boatFractions.includes(boatFraction as any)) throw new Error("Invalid boat payload fraction");
   const clientID = "benchmark-human";
   const gameStart = {
     gameID: seed, lobbyCreatedAt: 0,
@@ -117,7 +119,9 @@ async function runNaval(seed: string) {
     const checked = [];
     for (const [x, y] of coast) {
       const tile = game.ref(x, y);
-      if (!game.isLand(tile) || game.isImpassable(tile) || game.ownerID(tile) === human.smallID())
+      // Hold target class constant across the sweep. Never offer a tribe or
+      // nation here; the tribe <=20% rule is unrelated to wilderness boats.
+      if (!game.isLand(tile) || game.isImpassable(tile) || game.ownerID(tile) !== 0)
         continue;
       // Match the worker's actual playerBuildables and core canBuild result.
       const source = human.canBuild(UnitType.TransportShip, tile);
@@ -127,7 +131,8 @@ async function runNaval(seed: string) {
       checked.push({ x, y, owner: game.owner(tile).id(), canBuild: source !== false });
       if (source !== false) {
         const landing = targetTransportTile(game, human, tile);
-        if (landing === null) throw new Error("Legal candidate has no target shore");
+        if (landing === null || game.ownerID(landing) !== 0)
+          throw new Error("Legal wilderness candidate resolved to a non-wilderness shore");
         return { tile, source, landing, checked };
       }
     }
@@ -150,16 +155,17 @@ async function runNaval(seed: string) {
           landIntents++;
         }
       }
-      // One/two modest boat sends after land expansion reaches its island edge.
-      // 10% payload keeps 90% of the then-available reserve, and the second
-      // is spaced >=20 simulated seconds. No hidden naval target expansion.
+      // One/two fixed-fraction boat sends after land expansion reaches its
+      // island edge. Fractions are compared across fresh paired games; each
+      // preserves at least 70% of then-available troops before other intents.
+      // The second is spaced >=20 simulated seconds.
       if (islandFullSecond !== null && boats.length < 2 &&
           second - lastBoatSecond >= 20 && second - lastCoastProbe >= 5 &&
           human.unitCount(UnitType.TransportShip) < game.config().boatMaxNumber()) {
         lastCoastProbe = second;
         const candidate = selectCoast();
         if (candidate.tile !== null && human.troops() >= 10) {
-          const troops = Math.floor(human.troops() * 0.1);
+          const troops = Math.floor(human.troops() * boatFraction);
           if (troops >= 1) {
             intents.push({ type: "boat", clientID, dst: candidate.tile, troops });
             launch = { second, requested: candidate.tile, source: candidate.source,
@@ -199,7 +205,8 @@ async function runNaval(seed: string) {
   if (winUpdates === 1 && winner === null) throw new Error("Winnerless engine Win");
   const completed = winUpdates === 1;
   return {
-    seed, policy: "fixed20-plus-two-10pct-boats", opponentSpawns,
+    seed, policy: `fixed20-plus-two-${boatFraction * 100}pct-wilderness-boats`,
+    boatFraction, opponentSpawns,
     completed, status: completed ? "engine-win" : "censored-tick-cap",
     win: completed ? winner === human : null,
     winner: completed ? { id: winner.id(), name: winner.name(), wire: wireWinner } : null,
@@ -224,38 +231,56 @@ async function runNaval(seed: string) {
   };
 }
 
+const baselines: any[] = [];
 const pairs: any[] = [];
 for (const seed of opts.seeds) {
   const baseline = await runBenchmarkMatch(seed, "fixed20-wilderness", opts);
-  const naval = await runNaval(seed);
-  if (JSON.stringify(baseline.opponentSpawns) !== JSON.stringify(naval.opponentSpawns))
-    throw new Error(`Unpaired nation IDs/spawns: ${seed}`);
-  pairs.push({ seed, baseline, naval,
-    completed: baseline.completed && naval.completed,
-    baselineWin: baseline.win, navalWin: naval.win,
-    humanTileDelta: naval.human.tiles - baseline.human.tiles });
-  console.log(`${seed}: baseline=${baseline.status}/${baseline.winner?.name ?? "none"} ` +
-    `naval=${naval.status}/${naval.winner?.name ?? "none"} ` +
-    `boats=${naval.boats.length} landed=${naval.boats.filter((b: any) => b.landedTick !== null).length} ` +
-    `tiles=${baseline.human.tiles}->${naval.human.tiles}`);
+  baselines.push(baseline);
+  for (const boatFraction of boatFractions) {
+    const naval = await runNaval(seed, boatFraction);
+    if (JSON.stringify(baseline.opponentSpawns) !== JSON.stringify(naval.opponentSpawns))
+      throw new Error(`Unpaired nation IDs/spawns: ${seed}/${boatFraction}`);
+    pairs.push({ seed, boatFraction, naval,
+      completed: baseline.completed && naval.completed,
+      baselineWin: baseline.win, navalWin: naval.win,
+      humanTileDelta: naval.human.tiles - baseline.human.tiles });
+    console.log(`${seed} boat=${boatFraction * 100}%: ` +
+      `baseline=${baseline.status}/${baseline.winner?.name ?? "none"} ` +
+      `naval=${naval.status}/${naval.winner?.name ?? "none"} ` +
+      `boats=${naval.boats.length} landed=${naval.boats.filter((b: any) => b.landedTick !== null).length} ` +
+      `tiles=${baseline.human.tiles}->${naval.human.tiles}`);
+  }
 }
 const completePairs = pairs.filter((p) => p.completed);
 const report = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   engineCommit: execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   map: "Onion", difficulty: "Impossible", seedCount: opts.seeds.length,
   timerMinutes: opts.minutes, maxLiveTicks: opts.maxTicks,
   candidateCoastSample: coast,
+  boatFractions,
   controls: {
     baseline: "Fixed 20% wilderness every game second, as in scripts/benchmark-baseline.mts",
-    naval: "Same land control; after full starting island, up to two 10%-of-available-troops transport intents to first worker-legal sampled outer-ring coast, >=20s apart; retries candidate scan every >=5s. Not a model policy.",
+    naval: "Same land control; after full starting island, up to two fixed-fraction transport intents only to worker-legal unowned outer-ring coast, >=20s apart; retries candidate scan every >=5s. Compare 10/20/30% of available troops. Not a model policy.",
   },
-  pairs,
-  summary: { completedPairs: completePairs.length, totalPairs: pairs.length,
-    baselineWins: completePairs.filter((p) => p.baselineWin === true).length,
-    navalWins: completePairs.filter((p) => p.navalWin === true).length },
+  baselines, pairs,
+  summary: {
+    completedPairs: completePairs.length, totalPairs: pairs.length,
+    baselineWins: baselines.filter((b) => b.completed && b.win === true).length,
+    byBoatPercent: Object.fromEntries(boatFractions.map((fraction) => {
+      const group = pairs.filter((p) => p.boatFraction === fraction);
+      const complete = group.filter((p) => p.completed);
+      return [String(fraction * 100), {
+        completedPairs: complete.length, totalPairs: group.length,
+        navalWins: complete.filter((p) => p.navalWin === true).length,
+        launches: group.reduce((sum, p) => sum + p.naval.boats.filter((b: any) => b.launched).length, 0),
+        landfalls: group.reduce((sum, p) => sum + p.naval.boats.filter((b: any) => b.landedTick !== null).length, 0),
+        endOwnedLandingTiles: group.reduce((sum, p) => sum + p.naval.boats.filter((b: any) => b.landingOwnedAtEnd).length, 0),
+      }];
+    })),
+  },
 };
 await mkdir(dirname(resolve(cli.output)), { recursive: true });
 await writeFile(cli.output, JSON.stringify(report, null, 2) + "\n");
-console.log(`Saved ${pairs.length} paired seeds to ${cli.output}`);
+console.log(`Saved ${pairs.length} seed/fraction pairs across ${opts.seeds.length} seeds to ${cli.output}`);
 if (!cli.smoke && completePairs.length !== pairs.length) process.exitCode = 2;
