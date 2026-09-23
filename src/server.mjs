@@ -120,6 +120,7 @@ export function createAgentServer({
   enableHybridDecisions = false,
   enableNavalDecisions = false,
   enableNavalDecomposedProbe = false,
+  enableNavalDecomposedLive = false,
   requireStartSession = true,
   enableCopilotPlanner = false,
   planner = null, // injectable for network-free tests; never browser-supplied
@@ -187,6 +188,8 @@ export function createAgentServer({
         navalEnabled: enableHybridDecisions && enableNavalDecisions && requireStartSession,
         decomposedNavalProbeEnabled: enableHybridDecisions && enableNavalDecisions &&
           enableNavalDecomposedProbe && requireStartSession,
+        decomposedNavalLiveEnabled: enableHybridDecisions && enableNavalDecisions &&
+          enableNavalDecomposedLive && requireStartSession,
         plannerEnabled: enableHybridDecisions && plannerReady && requireStartSession,
         plannerStatus: !enableCopilotPlanner ? "disabled" :
           !plannerAuthReady ? "token_missing" :
@@ -455,12 +458,17 @@ export function createAgentServer({
       }
     }
     const decomposedProbe = pathname === "/naval-decomposed-probe";
-    const hybrid = pathname === "/hybrid-decision" || decomposedProbe;
+    const decomposedLive = pathname === "/hybrid-decision-decomposed";
+    const decomposed = decomposedProbe || decomposedLive;
+    const hybrid = pathname === "/hybrid-decision" || decomposed;
     if (req.method !== "POST" || (!hybrid && pathname !== "/decision"))
       return send(404, { error: "Not found" });
     if (decomposedProbe && (!enableNavalDecomposedProbe || !enableNavalDecisions ||
         !enableHybridDecisions || !requireStartSession))
       return send(403, { error: "Decomposed naval probe is disabled" });
+    if (decomposedLive && (!enableNavalDecomposedLive || !enableNavalDecisions ||
+        !enableHybridDecisions || !requireStartSession))
+      return send(403, { error: "Decomposed naval decisions are disabled" });
     if (hybrid && !enableHybridDecisions)
       return send(403, { error: "Hybrid decision endpoint is disabled" });
     const authorized = requireStartSession ? session : null;
@@ -495,7 +503,7 @@ export function createAgentServer({
       // Naval actions are a separately approved experiment. A present,
       // non-null raw proposal cannot reach TypeSafe without BOTH feature flags
       // and an explicit local hybrid Start, even in legacy test mode.
-      if (decomposedProbe && (!supplied || !Object.hasOwn(supplied, "naval") ||
+      if (decomposed && (!supplied || !Object.hasOwn(supplied, "naval") ||
           supplied.naval === null))
         return send(400, { error: "Probe requires a worker-checked naval proposal" });
       if (hybrid && supplied && Object.hasOwn(supplied, "naval") &&
@@ -523,7 +531,7 @@ export function createAgentServer({
         : validateObservation(supplied);
       // Candidate limits can fail even for a valid observation. Reject before
       // acquiring the single-flight lock, so this cannot strand the server busy.
-      request = decomposedProbe
+      request = decomposed
         ? buildNavalDecomposedRequest(observation, model)
         : hybrid ? buildHybridRequest(observation, model)
           : buildRequest(observation, model);
@@ -588,7 +596,7 @@ export function createAgentServer({
       if (!planStillApplicable())
         throw new Error("Planner objective expired during Jev inference");
       const decision = {
-        ...(decomposedProbe
+        ...(decomposed
           ? parseNavalDecomposedDecision(answer, request)
           : hybrid ? parseHybridDecision(answer, request)
             : parseDecision(answer, request.questions.action.criteria)),
@@ -597,7 +605,7 @@ export function createAgentServer({
       await log({
         timestamp: new Date().toISOString(),
         requestStartedAt,
-        policy: decomposedProbe ? NAVAL_DECOMPOSED_POLICY_VERSION :
+        policy: decomposed ? NAVAL_DECOMPOSED_POLICY_VERSION :
           hybrid ? HYBRID_POLICY_VERSION : POLICY_VERSION,
         probe_only: decomposedProbe,
         planProvenance: requestedPlan ? { provider: "official-copilot-sdk",
@@ -648,6 +656,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       enableHybridDecisions: process.env.OPENFRONT_HYBRID_EXPERIMENT === "1",
       enableNavalDecisions: process.env.OPENFRONT_NAVAL_EXPERIMENT === "1",
       enableNavalDecomposedProbe: process.env.OPENFRONT_DECOMPOSED_NAVAL_PROBE === "1",
+      enableNavalDecomposedLive: process.env.OPENFRONT_DECOMPOSED_NAVAL_LIVE === "1",
       enableCopilotPlanner: process.env.OPENFRONT_COPILOT_PLANNER === "1",
       log: (record) => appendFile(logfile, JSON.stringify(record) + "\n"),
     });
