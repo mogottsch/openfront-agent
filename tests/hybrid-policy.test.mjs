@@ -84,6 +84,73 @@ const base = () => ({
     },
   },
 });
+function withBoat(type = "wilderness") {
+  const o = base(),
+    snapshot_id = "solo-1/map@109#9";
+  o.naval = {
+    snapshot_id,
+    source_tick: 109,
+    current_tick: 109,
+    map_id: "solo-1/map",
+    available_troops_internal: 80000,
+    boats: { cap: 3, active_count: 0, active_transports: [] },
+    candidates: [
+      {
+        id: `${snapshot_id}:boat1`,
+        kind: "boat",
+        source_region_id: `${snapshot_id}:r1`,
+        target_region_id: `${snapshot_id}:nr1`,
+        target_owner_id: type === "wilderness" ? 0 : 2,
+        target_type: type,
+        target_region_tiles: 120,
+        water_component_id: `${snapshot_id}:w1`,
+        water_ocean_status: "ocean",
+        source_shore_tiles: 7,
+        target_shore_tiles: 9,
+        water_span_estimate_tiles: 19,
+        water_span_method: "shore_manhattan_separation_not_water_path",
+        status: "worker_checked_not_executed",
+        geometry_status: "geometric_only_not_engine_legal",
+        cost_gold: "0",
+        worker_source_confirmed: true,
+      },
+    ],
+    coverage: {
+      total_eligible: 1,
+      worker_checked: 1,
+      offered_count: 1,
+      omitted_count: 0,
+      coast: {
+        source_water_components: 1,
+        eligible_target_owner_regions: 1,
+        coast_budget_truncated_owner_regions: 0,
+        eligible_region_component_coasts: 1,
+        sampled_region_component_coasts: 1,
+        eligible_coast_contacts: 9,
+        sample_budget: 16,
+        shore_source: "isShore_and_water_adjacency",
+      },
+      certainty: "Geometry + worker spawn verified; landing not guaranteed",
+    },
+    omissions: {
+      coast_budget_unexamined: 0,
+      pair_budget_unexamined: 0,
+      geometry_shortlist_limit: 0,
+      worker_unchecked: 0,
+      shortlist_limit: 0,
+      pending_intent: 0,
+      cap_blocked: 0,
+      invalid_target: 0,
+      not_buildable: 0,
+      invalid_worker_result: 0,
+      invalid_source: 0,
+      invalid_gold: 0,
+      unaffordable: 0,
+    },
+  };
+  return o;
+}
+
 function answer(request, choices) {
   return {
     model: "jev-test",
@@ -106,6 +173,49 @@ function answer(request, choices) {
     ),
   };
 }
+
+test("boat action is a separate bounded Choice in the same request; Jev branch decides whether it executes", () => {
+  const input = withBoat();
+  const req = buildHybridRequest(input);
+  assert.deepEqual(Object.keys(req.questions), [
+    "branch",
+    "land_action",
+    "city_site",
+    "boat_action",
+  ]);
+  assert.deepEqual(Object.keys(req.questions.boat_action.criteria), [
+    "wait",
+    "boat_1_10",
+    "boat_1_20",
+    "boat_1_30",
+    "boat_1_40",
+    "boat_1_50",
+  ]);
+  assert.ok(req.questions.branch.criteria.boat_attack);
+  assert.equal(req.state.naval.offered_destinations, 1);
+  assert.ok(!JSON.stringify(req).includes("destination_tile"));
+  assert.ok(!JSON.stringify(req).includes("target_shore_tile"));
+  const choice = {
+    branch: "boat_attack",
+    land_action: "wait",
+    city_site: "save_gold",
+    boat_action: "boat_1_20",
+  };
+  const result = parseHybridDecision(answer(req, choice), req);
+  assert.equal(result.kind, "boat");
+  assert.equal(result.selected, "boat_1_20");
+  assert.equal(result.candidate_id, input.naval.candidates[0].id);
+  assert.equal(result.fraction, 0.2);
+  assert.equal(result.context.naval_snapshot_id, input.naval.snapshot_id);
+  choice.branch = "city_build";
+  assert.equal(parseHybridDecision(answer(req, choice), req).kind, "wait"); // save_gold, no hidden boat send
+  const tribe = buildHybridRequest(withBoat("tribe"));
+  assert.deepEqual(Object.keys(tribe.questions.boat_action.criteria), [
+    "wait",
+    "boat_1_10",
+    "boat_1_20",
+  ]);
+});
 
 test("branch and independent land/site choices share one bounded Jev request", () => {
   const input = base();

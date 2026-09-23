@@ -2,6 +2,7 @@
 // ONE TypeSafe request. Answers are composed only after parsing all questions.
 // No game controller imports this yet; the current land route remains unchanged.
 import { actionCriteria } from "../web/observation.js";
+import { navalCriteria } from "../web/naval-observation.js";
 import {
   hybridChoices,
   hybridModelState,
@@ -9,7 +10,7 @@ import {
 } from "../web/hybrid-observation.js";
 import { buildRequest as buildLandRequest, parseDecision } from "./policy.mjs";
 
-export const HYBRID_POLICY_VERSION = "hybrid-branch-v1.1-city-mechanics";
+export const HYBRID_POLICY_VERSION = "hybrid-branch-v2-naval-proposed";
 
 export function buildHybridRequest(input, model = "jev-latest") {
   const clean = validateHybridInput(input);
@@ -19,9 +20,9 @@ export function buildHybridRequest(input, model = "jev-latest") {
     branch: {
       type: "choice",
       instructions: [
-        "Choose our immediate action family in OpenFront. Decide among waiting, a normal land attack, and building one City only when offered. Preserve survival and growth while gaining territory and developing our economy; a branch being feasible is not a command to take it.",
-        "The optional objective is a strategic suggestion, not a game rule or legal permission. Use current reserve, existing attacks, pressure, available gold, City site costs and the supplied City troop-capacity benefit. Other future moves and unprovided site effects are unknown; candidate omissions are disclosed.",
-        "If choosing a branch, the independently answered land_action or city_site Choice names the actual candidate; either can still choose wait/save gold. Never infer that an option was silently filtered because of strategic priority.",
+        "Choose our immediate action family in OpenFront. Decide among waiting, a normal land attack, a worker-checked coastal transport-boat attack, and building one City only when offered. Preserve survival and growth while gaining territory and developing our economy; a branch being feasible is not a command to take it.",
+        "The optional objective is a strategic suggestion, not a game rule or legal permission. Use current reserve, existing attacks, pressure, available gold, City costs/capacity benefit and naval fleet/coast facts. An island with no land target cannot expand further without a boat. Worker-confirmed spawn is not guaranteed travel, landing or conquest. Other future moves and unprovided site effects are unknown; candidate omissions are disclosed.",
+        "If choosing a branch, the independently answered land_action, city_site or boat_action Choice names the actual candidate; each can still choose wait/save gold. Never infer that an option was silently filtered because of strategic priority.",
       ],
       criteria: actions.branch,
     },
@@ -44,6 +45,16 @@ export function buildHybridRequest(input, model = "jev-latest") {
         "Site candidates are bounded and may omit good locations; economy.city_sites_omitted counts unoffered sites. City construction remains subject to a fresh worker check and normal game rules.",
       ],
       criteria: actions.city,
+    };
+  if (actions.branch.boat_attack)
+    questions.boat_action = {
+      type: "choice",
+      instructions: [
+        "Premise: IF we choose boat_attack, select ONE worker-checked coastal target/size or wait. This answer is independent of the branch; ignore it if another branch wins.",
+        "A boat needs no Port in this engine. It commits the chosen percentage of CURRENT available troops to a normal naval transport intent; the engine rechecks legality, path, boat cap and route. Target-region size and shore separation are geometric facts, not combat or route guarantees. A successful landing starts a land attack. Existing boats still travel when we wait; do not blindly stack boats or empty the reserve. Tribes offer only 10%/20%; other targets offer up to 50%.",
+        "When land expansion is exhausted on an island, consider a modest boat to accessible wilderness or a weak coast if a usable home army remains; otherwise wait. An optional strategic objective is advice, not a legal override.",
+      ],
+      criteria: navalCriteria(actions.boat),
     };
   return { model, state: hybridModelState(clean), questions };
 }
@@ -74,17 +85,30 @@ export function parseHybridDecision(response, request) {
       ? decisions.land_action.action
       : branch === "city_build"
         ? decisions.city_site.action
-        : "wait";
+        : branch === "boat_attack"
+          ? decisions.boat_action.action
+          : "wait";
   const kind =
     selected === "wait" || selected === "save_gold"
       ? "wait"
       : branch === "city_build"
         ? "city"
-        : "land";
+        : branch === "boat_attack"
+          ? "boat"
+          : "land";
   const site =
-    kind === "city" ? request.questions.city_site.criteria[selected] : null;
-  if (kind === "city" && typeof site?.candidate_id !== "string")
-    throw new Error("Hybrid City choice lost its offered candidate identity");
+    kind === "city"
+      ? request.questions.city_site.criteria[selected]
+      : kind === "boat"
+        ? request.questions.boat_action.criteria[selected]
+        : null;
+  if (
+    (kind === "city" || kind === "boat") &&
+    typeof site?.candidate_id !== "string"
+  )
+    throw new Error(
+      "Hybrid spatial choice lost its offered candidate identity",
+    );
   // These refer to the SAME offered request, never a regenerated shortlist.
   // The controller must still compare them to the live game/plan and recheck
   // the opaque candidate through the building adapter before emitting an intent.
@@ -93,10 +117,12 @@ export function parseHybridDecision(response, request) {
     selected,
     kind,
     candidate_id: site?.candidate_id ?? null,
+    fraction: kind === "boat" ? site?.percent_of_available_troops / 100 : null,
     context: {
       game_id: request.state.game_id,
       snapshot_tick: request.state.snapshot_tick,
       building_snapshot_id: request.state.economy.building_snapshot_id,
+      naval_snapshot_id: request.state.naval.snapshot_id ?? null,
       plan_version: request.state.objective?.version ?? null,
     },
     decisions,

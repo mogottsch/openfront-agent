@@ -138,6 +138,7 @@ test("hybrid Jev endpoint validates three answers, preserves site identity and s
     game_id: input.game_id,
     snapshot_tick: 100,
     building_snapshot_id: input.building.snapshot_id,
+    naval_snapshot_id: null,
     plan_version: null,
   });
   assert.deepEqual(Object.keys(calls[0].req.questions), [
