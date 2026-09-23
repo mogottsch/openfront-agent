@@ -179,12 +179,12 @@ export function mount(connection) {
     .then((health) => {
       if (disposed) return;
       hybridEnabled = Boolean(hybridController && health?.hybridEnabled);
-      if (hybridEnabled && health?.copilotEnabled)
+      if (hybridEnabled && health?.plannerEnabled)
         hybridController.setPlanClient(planClient);
       $("hybrid").disabled =
         !hybridEnabled || Boolean(activeController?.running);
       $("hybrid-status").textContent = hybridEnabled
-        ? `Hybrid City experiment enabled; Copilot ${health?.copilotEnabled ? "enabled (opt-in on Start)" : "disabled"}. City scan at most once per 15s.`
+        ? `Hybrid City experiment enabled; Copilot ${health?.plannerEnabled ? "enabled (opt-in on Start)" : "disabled"}. City scan at most once per 15s.`
         : "Hybrid City experiment disabled in local sidecar (land mode remains available).";
     })
     .catch(() => {
