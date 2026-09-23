@@ -3,12 +3,12 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { actionCriteria, buildActions } from "../web/observation.js";
 import { POLICY_VERSION } from "../src/policy.mjs";
 import { runBenchmarkMatch, type Options } from "./benchmark-baseline.mts";
 import {
   createPacedDecisionClient,
+  createTickPacer,
   observeCore,
   recheckCoreAction,
 } from "./benchmark-jev-observation.mjs";
@@ -78,15 +78,7 @@ const opts: Options = {
   output: cli.output,
 };
 let totalCalls = 0;
-let lastTickStart = -Infinity;
-const paceTick = async () => {
-  const wait = lastTickStart + 100 - performance.now();
-  if (wait > 0) await sleep(Math.ceil(wait));
-  const started = performance.now();
-  if (started < lastTickStart + 100)
-    throw new Error("Tick pacing clock did not advance by 100ms");
-  lastTickStart = started;
-};
+const paceTick = createTickPacer();
 const mockFetch = async (_url: string, init: any) => {
   // Exercise JSON request/response and paced transport without a sidecar or
   // credential. A mock Choice is never labelled as an actual Jev judgment.

@@ -4,6 +4,7 @@ import { modelState } from "../web/observation.js";
 import { createGameAdapter } from "../web/game-adapter.js";
 import {
   createPacedDecisionClient,
+  createTickPacer,
   observeCore,
   recheckCoreAction,
 } from "../scripts/benchmark-jev-observation.mjs";
@@ -157,6 +158,44 @@ test("local decision transport is single-flight and starts at least a real secon
   await first;
   await client({ self: 1 });
   assert.deepEqual(starts, [0, 1000]);
+});
+
+test("early timer wakeups cannot abort or accelerate ticks; slow work never catches up", async () => {
+  let clock = 0;
+  const pace = createTickPacer({
+    now: () => clock,
+    // A timer can resolve slightly before its requested deadline.
+    sleep: async (ms) => { clock += Math.max(0.5, ms - 0.3); },
+  });
+  const starts = [await pace(), await pace()];
+  clock += 350; // Slow model or engine work between tick starts.
+  starts.push(await pace(), await pace());
+  assert.equal(starts[0], 0);
+  for (let i = 1; i < starts.length; i++)
+    assert.ok(starts[i] - starts[i - 1] >= 100, `tick ${i} advanced too quickly`);
+  assert.ok(starts[2] - starts[1] > 300, "slow work was not preserved");
+});
+
+test("early timer wakeups cannot issue a sidecar request before 1s", async () => {
+  let clock = 0;
+  const starts = [];
+  const client = createPacedDecisionClient({
+    now: () => clock,
+    sleep: async (ms) => { clock += Math.max(0.5, ms - 0.4); },
+    fetchImpl: async () => {
+      starts.push(clock);
+      return { ok: true, json: async () => ({ action: "wait" }) };
+    },
+  });
+  await client({});
+  await client({});
+  clock += 2300; // Do not schedule catch-up requests after a long gap.
+  await client({});
+  await client({});
+  assert.equal(starts[0], 0);
+  for (let i = 1; i < starts.length; i++)
+    assert.ok(starts[i] - starts[i - 1] >= 1000, `call ${i} was too early`);
+  assert.ok(starts[2] - starts[1] > 2000);
 });
 
 test("sidecar failure does not invent a wait or attack", async () => {

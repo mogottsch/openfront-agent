@@ -95,6 +95,24 @@ export function recheckCoreAction(game, me, snapshot, choiceId) {
   return action;
 }
 
+// Tick starts never exceed the 10Hz simulation rate. Base each new deadline
+// on the *actual* start, not the previous deadline: a slow model cannot cause
+// catch-up ticks. Timers may wake slightly early, so loop until the deadline.
+export function createTickPacer({
+  now = () => performance.now(),
+  sleep = (ms) => sleepMs(ms),
+} = {}) {
+  let nextStart = -Infinity;
+  return async () => {
+    while (now() < nextStart) {
+      await sleep(Math.max(1, Math.ceil(nextStart - now())));
+    }
+    const startedAtMs = now();
+    nextStart = startedAtMs + 100;
+    return startedAtMs;
+  };
+}
+
 // Local sidecar only: never read a credential or call TypeSafe directly.
 // One outstanding request, real monotonic >=1s between *starts*, no queue.
 export function createPacedDecisionClient({
@@ -109,11 +127,10 @@ export function createPacedDecisionClient({
     if (busy) throw new Error("A benchmark decision is already pending");
     busy = true;
     try {
-      const wait = lastStart + 1000 - now();
-      if (wait > 0) await sleep(Math.ceil(wait));
+      while (now() < lastStart + 1000) {
+        await sleep(Math.max(1, Math.ceil(lastStart + 1000 - now())));
+      }
       const startedAtMs = now();
-      if (startedAtMs < lastStart + 1000)
-        throw new Error("Decision pacing clock did not advance by one second");
       lastStart = startedAtMs;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
