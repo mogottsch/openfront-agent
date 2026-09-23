@@ -6,7 +6,8 @@ import { test } from 'node:test';
 import { tmpdir } from 'node:os';
 import { CopilotClient, CopilotSession } from '@github/copilot-sdk';
 import { createCopilotPlanner, validatePlan, CopilotPhaseError,
-  COPILOT_FAILURE_STAGES } from '../src/copilot-planner.mjs';
+  COPILOT_FAILURE_STAGES, hasCopilotServerToken,
+  buildCopilotClientOptions } from '../src/copilot-planner.mjs';
 
 const phase = (expected) => (error) => {
   assert.ok(error instanceof CopilotPhaseError);
@@ -61,6 +62,48 @@ test('pinned official SDK exposes a local runtime and structured-output session 
     assert.ok(runtime.byteLength > 0);
   }
   // Constructing the client and inspecting package artifacts makes no request.
+});
+
+test('server-only Copilot token is required; empty mode cannot inherit CLI/GH or sidecar secrets', () => {
+  assert.equal(hasCopilotServerToken({}), false);
+  assert.equal(hasCopilotServerToken({ COPILOT_GITHUB_TOKEN: '  ' }), false);
+  assert.equal(hasCopilotServerToken({ COPILOT_GITHUB_TOKEN: 'fake-test-token' }), true);
+  assert.throws(() => buildCopilotClientOptions({ GH_TOKEN: 'ambient-token' }), (error) => {
+    assert.equal(error.name, 'AuthenticationError');
+    assert.ok(!String(error).includes('ambient-token'));
+    return true;
+  });
+  const options = buildCopilotClientOptions({ COPILOT_GITHUB_TOKEN: 'fake-test-token',
+    GH_TOKEN: 'bad-ambient-token', GITHUB_TOKEN: 'bad-actions-token',
+    TYPESAFE_AI_API_KEY: 'private-jev-key', GITHUB_COPILOT_API_TOKEN: 'bad-direct-token',
+    CAPI_HMAC_KEY: 'bad-hmac', COPILOT_PROVIDER_API_KEY: 'bad-byok',
+    PATH: '/usr/bin', HOME: '/tmp/test-home' });
+  assert.equal(options.mode, 'empty');
+  assert.equal(options.useLoggedInUser, false);
+  assert.equal(options.env.COPILOT_GITHUB_TOKEN, 'fake-test-token');
+  assert.equal(options.env.PATH, '/usr/bin');
+  assert.equal(options.env.HOME, '/tmp/test-home');
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'TYPESAFE_AI_API_KEY',
+    'GITHUB_COPILOT_API_TOKEN', 'CAPI_HMAC_KEY', 'COPILOT_PROVIDER_API_KEY'])
+    assert.equal(Object.hasOwn(options.env, key), false);
+});
+
+test('default factory refuses a missing explicit credential before SDK start', async () => {
+  const old = process.env.COPILOT_GITHUB_TOKEN;
+  delete process.env.COPILOT_GITHUB_TOKEN;
+  try {
+    const planner = createCopilotPlanner({ model: 'mock', now: () => 1100 });
+    await assert.rejects(planner({ snapshot: snapshot(), getCurrentState: () =>
+      ({ game_id: 'solo-1', tick: 420, plan_version: 0 }) }), (error) => {
+      phase('create_client')(error);
+      assert.equal(error.diagnostic_kind, 'auth');
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+  } finally {
+    if (old === undefined) delete process.env.COPILOT_GITHUB_TOKEN;
+    else process.env.COPILOT_GITHUB_TOKEN = old;
+  }
 });
 
 test('single-probe harness is inert by default and refuses partial authorization', () => {

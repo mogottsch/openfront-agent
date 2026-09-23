@@ -16,7 +16,7 @@ import {
   HYBRID_POLICY_VERSION,
 } from "./hybrid-policy.mjs";
 import { validateHybridInput } from "../web/hybrid-observation.js";
-import { createCopilotPlanner, CopilotPhaseError,
+import { createCopilotPlanner, hasCopilotServerToken, CopilotPhaseError,
   COPILOT_FAILURE_STAGES } from "./copilot-planner.mjs";
 import { createPlanSession } from "./plan-session.mjs";
 
@@ -128,7 +128,12 @@ export function createAgentServer({
       (planner !== null && typeof planner !== "function")) {
     throw new Error("Invalid planner configuration");
   }
-  const planModel = enableCopilotPlanner
+  // Mock planners supplied by the test host are isolated from real auth. The
+  // production SDK path is disabled at construction time without the explicit
+  // Copilot-only server token; setting it later requires a controlled restart.
+  const plannerAuthReady = planner !== null || hasCopilotServerToken();
+  const plannerReady = enableCopilotPlanner && plannerAuthReady;
+  const planModel = plannerReady
     ? (planner ?? createCopilotPlanner({ model: "gpt-5-mini",
         maxSnapshotAgeMs: 20_000, maxTickLag: 200, timeoutMs: 15_000 }))
     : null;
@@ -177,7 +182,10 @@ export function createAgentServer({
         hybridPolicy: HYBRID_POLICY_VERSION,
         hybridEnabled: enableHybridDecisions,
         navalEnabled: enableHybridDecisions && enableNavalDecisions && requireStartSession,
-        plannerEnabled: enableHybridDecisions && enableCopilotPlanner && requireStartSession,
+        plannerEnabled: enableHybridDecisions && plannerReady && requireStartSession,
+        plannerStatus: !enableCopilotPlanner ? "disabled" :
+          !plannerAuthReady ? "token_missing" :
+          !enableHybridDecisions || !requireStartSession ? "hybrid_disabled" : "ready",
         planCallLimit: maxPlanRequestsPerSession,
         planCallsUsed: session?.planCount ?? 0,
         requiresStart: requireStartSession,
@@ -276,7 +284,7 @@ export function createAgentServer({
       // A separate Start token and hybrid opt-in are required even if legacy
       // tests configure requireStartSession:false for the Jev decision route.
       const authorized = session;
-      if (!requireStartSession || !enableHybridDecisions || !enableCopilotPlanner ||
+      if (!requireStartSession || !enableHybridDecisions || !plannerReady ||
           !authorized?.planSession || authorized.mode !== "hybrid" ||
           req.headers["x-agent-session"] !== authorized.token ||
           performance.now() >= authorized.expiresAt) {

@@ -94,6 +94,36 @@ const waitFor = async (predicate) => {
   throw new Error('Timed out waiting for injected planner');
 };
 
+test('real planner flag fails closed without explicit server token; injected mocks still work', async (t) => {
+  const old = process.env.COPILOT_GITHUB_TOKEN;
+  delete process.env.COPILOT_GITHUB_TOKEN;
+  try {
+    let upstream = 0;
+    const url = await serve(t, { planner: null,
+      fetchImpl: async () => { upstream++; throw new Error('No call expected'); } });
+    const health = await json(url, '/health');
+    assert.equal(health.body.plannerEnabled, false);
+    assert.equal(health.body.plannerStatus, 'token_missing');
+    const started = await json(url, '/session', { method: 'POST',
+      body: { mode: 'hybrid', limit: 2 } });
+    assert.equal(started.status, 200);
+    assert.equal(started.body.plan_limit, 0);
+    assert.equal((await json(url, '/plan', { method: 'POST', body: planBody(),
+      token: started.body.token })).status, 403);
+    assert.equal(upstream, 0);
+    const mocked = await serve(t, { planner: async (args) => fakePlan(args) });
+    const mockHealth = await json(mocked, '/health');
+    assert.equal(mockHealth.body.plannerEnabled, true);
+    assert.equal(mockHealth.body.plannerStatus, 'ready');
+    const token = await start(mocked);
+    assert.equal((await json(mocked, '/plan', { method: 'POST',
+      body: planBody(), token })).status, 200);
+  } finally {
+    if (old === undefined) delete process.env.COPILOT_GITHUB_TOKEN;
+    else process.env.COPILOT_GITHUB_TOKEN = old;
+  }
+});
+
 test('planner is default-off and cannot call a provider before explicit hybrid Start', async (t) => {
   let calls = 0;
   const url = await serve(t, { enableCopilotPlanner: false,

@@ -128,15 +128,39 @@ export function validatePlan(plan, { snapshot, previousVersion, maxPlanTicks }) 
   return plan;
 }
 
+export function hasCopilotServerToken(environment = process.env) {
+  const token = environment?.COPILOT_GITHUB_TOKEN;
+  return typeof token === 'string' && token.length > 0 && !/\s/.test(token);
+}
+
+export function buildCopilotClientOptions(environment = process.env) {
+  if (!hasCopilotServerToken(environment)) {
+    const error = new Error('Copilot server credential unavailable');
+    error.name = 'AuthenticationError'; // safe typed hint, never the token
+    throw error;
+  }
+  // The SDK defaults to inheriting process.env, which would also give its
+  // runtime the TypeSafe sidecar key and lower-priority GH_TOKEN/GITHUB_TOKEN.
+  // Give the child only ordinary process/network settings and the explicit
+  // Copilot credential; no browser/CLI login, BYOK, or ambient GitHub fallback.
+  const allowed = ['PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'XDG_RUNTIME_DIR',
+    'LANG', 'LC_ALL', 'TZ', 'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'NO_PROXY',
+    'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS'];
+  const env = Object.fromEntries(allowed.filter((key) =>
+    typeof environment[key] === 'string').map((key) => [key, environment[key]]));
+  env.COPILOT_GITHUB_TOKEN = environment.COPILOT_GITHUB_TOKEN;
+  return {
+    mode: 'empty', useLoggedInUser: false, logLevel: 'none',
+    baseDirectory: join(tmpdir(), 'openfront-copilot-planner'), env,
+  };
+}
+
 async function defaultClientFactory() {
-  // SDK 1.0.15-preview.1 requires an explicit baseDirectory in "empty" mode.
-  // Store Copilot runtime state outside this public repository. SDK structured
-  // output is still preview; locally validate every plan independently.
+  // Fail before importing or starting the bundled runtime when the explicit
+  // credential is absent. Preview structured output is validated locally too.
+  const options = buildCopilotClientOptions();
   const { CopilotClient } = await import('@github/copilot-sdk');
-  return new CopilotClient({
-    mode: 'empty', logLevel: 'none',
-    baseDirectory: join(tmpdir(), 'openfront-copilot-planner'),
-  });
+  return new CopilotClient(options);
 }
 
 /** The caller owns the approved input projection, lifecycle, and scheduling.
