@@ -16,6 +16,20 @@ import {
   HYBRID_POLICY_VERSION,
 } from "./hybrid-policy.mjs";
 import { validateHybridInput } from "../web/hybrid-observation.js";
+import { createCopilotPlanner } from "./copilot-planner.mjs";
+import { createPlanSession } from "./plan-session.mjs";
+
+const COPILOT_PLAN_PROMPT_VERSION = "copilot-plan-v1";
+async function readBoundedJson(req, maxBytes) {
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of req) {
+    length += chunk.length;
+    if (length > maxBytes) throw new RangeError("Request too large");
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString());
+}
 
 const publicFiles = new Map([
   ["/agent.js", new URL("../web/agent.js", import.meta.url)],
@@ -35,6 +49,7 @@ const publicFiles = new Map([
     "/hybrid-controller.js",
     new URL("../web/hybrid-controller.js", import.meta.url),
   ],
+  ["/plan-client.js", new URL("../web/plan-client.js", import.meta.url)],
 ]);
 
 export function createAgentServer({
@@ -50,7 +65,20 @@ export function createAgentServer({
   minimumIntervalMs = 1000,
   enableHybridDecisions = false,
   requireStartSession = true,
+  enableCopilotPlanner = false,
+  planner = null, // injectable for network-free tests; never browser-supplied
+  planNow = Date.now,
+  maxPlanRequestsPerSession = 3,
 } = {}) {
+  if (typeof planNow !== "function" || !Number.isSafeInteger(maxPlanRequestsPerSession) ||
+      maxPlanRequestsPerSession < 1 || maxPlanRequestsPerSession > 10 ||
+      (planner !== null && typeof planner !== "function")) {
+    throw new Error("Invalid planner configuration");
+  }
+  const planModel = enableCopilotPlanner
+    ? (planner ?? createCopilotPlanner({ model: "gpt-5-mini",
+        maxSnapshotAgeMs: 20_000, maxTickLag: 200, timeoutMs: 15_000 }))
+    : null;
   let busy = false;
   let lastCall = -Infinity;
   let session = null;
@@ -95,6 +123,9 @@ export function createAgentServer({
         policy: POLICY_VERSION,
         hybridPolicy: HYBRID_POLICY_VERSION,
         hybridEnabled: enableHybridDecisions,
+        plannerEnabled: enableHybridDecisions && enableCopilotPlanner && requireStartSession,
+        planCallLimit: maxPlanRequestsPerSession,
+        planCallsUsed: session?.planCount ?? 0,
         requiresStart: requireStartSession,
         sessionActive: Boolean(
           session && performance.now() < session.expiresAt,
@@ -146,17 +177,27 @@ export function createAgentServer({
       )
         return send(400, { error: "Invalid Start mode or request cap" });
       activeRequestAbort?.abort();
+      session?.planSession?.stop();
       session = {
         token: randomBytes(24).toString("base64url"),
+        id: randomBytes(16).toString("hex"), // not the bearer token; never sent to the model
         mode: value.mode,
         limit: value.limit,
         count: 0,
+        planCount: 0,
+        gameId: null,
+        planAdmission: null, // bounded heartbeats buffered only during shared pacing
+        planSession: value.mode === "hybrid" && planModel && requireStartSession
+          ? createPlanSession({ planner: planModel, now: planNow,
+              maxSnapshotAgeMs: 20_000, maxHeartbeatGapMs: 2_000, maxTickLag: 200 })
+          : null,
         expiresAt: performance.now() + 15 * 60_000,
       };
       return send(200, {
         token: session.token,
         mode: session.mode,
         limit: session.limit,
+        plan_limit: session.planSession ? maxPlanRequestsPerSession : 0,
         expires_in_ms: 15 * 60_000,
       });
     }
@@ -164,8 +205,131 @@ export function createAgentServer({
       if (!session || req.headers["x-agent-session"] !== session.token)
         return send(403, { error: "No active Start session" });
       activeRequestAbort?.abort();
+      session.planSession?.stop();
       session = null;
       return send(200, { stopped: true });
+    }
+    if (pathname === "/plan" || pathname === "/plan/heartbeat") {
+      // A separate Start token and hybrid opt-in are required even if legacy
+      // tests configure requireStartSession:false for the Jev decision route.
+      const authorized = session;
+      if (!requireStartSession || !enableHybridDecisions || !enableCopilotPlanner ||
+          !authorized?.planSession || authorized.mode !== "hybrid" ||
+          req.headers["x-agent-session"] !== authorized.token ||
+          performance.now() >= authorized.expiresAt) {
+        return send(403, { error: "Hybrid planner requires explicit Start and opt-in" });
+      }
+      if (req.method === "GET" && pathname === "/plan") {
+        return send(200, { plan: authorized.gameId === null ? null :
+          authorized.planSession.getPlan({ session_id: authorized.id,
+            game_id: authorized.gameId }) });
+      }
+      if (req.method !== "POST") return send(404, { error: "Not found" });
+      if (!(req.headers["content-type"] ?? "").startsWith("application/json"))
+        return send(415, { error: "JSON required" });
+      if (pathname === "/plan/heartbeat") {
+        try {
+          const value = await readBoundedJson(req, 4096);
+          if (session !== authorized || !authorized.gameId ||
+              value?.game_id !== authorized.gameId ||
+              !value || typeof value !== "object" || Array.isArray(value) ||
+              Object.keys(value).length !== 3 ||
+              !Object.hasOwn(value, "tick") || !Object.hasOwn(value, "region_ids"))
+            throw new Error("Wrong plan session or heartbeat shape");
+          const heartbeat = { session_id: authorized.id, game_id: authorized.gameId,
+            tick: value.tick, region_ids: value.region_ids, observed_at_ms: planNow() };
+          // /plan may be waiting for the shared 1s Jev deadline. Applying a
+          // newer heartbeat before plan(snapshot) admission would make its
+          // exact tick/timestamp check fail without a model call. Keep at most
+          // four validated beats and apply them immediately after admission.
+          const admission = authorized.planAdmission;
+          if (admission) {
+            const last = admission.beats.at(-1) ?? admission.snapshot;
+            if (!Number.isSafeInteger(heartbeat.tick) || heartbeat.tick < last.tick ||
+                !Array.isArray(heartbeat.region_ids) || heartbeat.region_ids.length > 16 ||
+                heartbeat.region_ids.some((id) => typeof id !== "string" ||
+                  !/^[A-Za-z0-9:@#._/\-]{1,200}$/.test(id)) ||
+                new Set(heartbeat.region_ids).size !== heartbeat.region_ids.length ||
+                admission.beats.length >= 4) throw new Error("Invalid buffered heartbeat");
+            admission.beats.push(heartbeat);
+          } else {
+            authorized.planSession.heartbeat(heartbeat);
+          }
+          return send(200, { plan: authorized.planSession.getPlan({
+            session_id: authorized.id, game_id: authorized.gameId }) });
+        } catch (error) {
+          return send(error instanceof RangeError ? 413 : 400,
+            { error: "Invalid or stale planner heartbeat" });
+        }
+      }
+      if (busy) return send(429, { error: "A decision request is already pending" });
+      if (authorized.planCount >= maxPlanRequestsPerSession)
+        return send(403, { error: "Copilot plan request cap reached" });
+      busy = true; // shares Jev's single-flight lock; heartbeats can still arrive
+      try {
+        const value = await readBoundedJson(req, 16_384);
+        if (!value || typeof value !== "object" || Array.isArray(value) ||
+            Object.keys(value).length !== 4 ||
+            !Object.hasOwn(value, "game_id") || !Object.hasOwn(value, "tick") ||
+            !Object.hasOwn(value, "region_ids") || !Object.hasOwn(value, "summary") ||
+            session !== authorized || performance.now() >= authorized.expiresAt ||
+            (authorized.gameId !== null && authorized.gameId !== value.game_id)) {
+          return send(400, { error: "Invalid or changed planner snapshot" });
+        }
+        const snapshot = { ...value, session_id: authorized.id, observed_at_ms: planNow() };
+        if (authorized.gameId === null) {
+          authorized.planSession.start(snapshot); // no model call
+          authorized.gameId = value.game_id;
+        } else {
+          authorized.planSession.heartbeat({
+            session_id: authorized.id, game_id: value.game_id,
+            tick: value.tick, region_ids: value.region_ids,
+            observed_at_ms: snapshot.observed_at_ms,
+          });
+        }
+        // Same application-level pacing as Jev. No retry or replacement plan.
+        authorized.planAdmission = { snapshot, beats: [] };
+        while (performance.now() < lastCall + minimumIntervalMs) {
+          await delay(Math.ceil(lastCall + minimumIntervalMs - performance.now()));
+        }
+        if (session !== authorized || performance.now() >= authorized.expiresAt ||
+            authorized.planCount >= maxPlanRequestsPerSession) {
+          return send(409, { error: "Start session changed before planning" });
+        }
+        lastCall = performance.now();
+        authorized.planCount++; // count attempts, including failures; max three per Start
+        const running = authorized.planSession.plan(snapshot);
+        const buffered = authorized.planAdmission.beats;
+        authorized.planAdmission = null;
+        let plan;
+        try {
+          for (const beat of buffered) authorized.planSession.heartbeat(beat);
+          plan = await running;
+        } catch (error) {
+          // A bad buffered beat must not release the shared busy lock while an
+          // SDK request is still active (its transport ignores AbortSignal).
+          await running.catch(() => {});
+          throw error;
+        }
+        const stillCurrent = () => session === authorized &&
+          performance.now() < authorized.expiresAt &&
+          authorized.planSession.getPlan({ session_id: authorized.id,
+            game_id: authorized.gameId })?.plan_version === plan.plan_version;
+        if (!stillCurrent()) return send(409, { error: "Plan expired or session changed" });
+        await log({ timestamp: new Date().toISOString(),
+          policy: COPILOT_PLAN_PROMPT_VERSION, provider: "official-copilot-sdk",
+          model: "gpt-5-mini", game_id: authorized.gameId,
+          source_tick: plan.source_tick, plan_version: plan.plan_version });
+        if (!stillCurrent()) return send(409, { error: "Plan expired or session changed" });
+        return send(200, { plan });
+      } catch (error) {
+        // Do not include SDK/provider errors, prompts or credentials in HTTP/logs.
+        return send(error instanceof RangeError ? 413 : 409,
+          { error: "Planner rejected stale input or inference failed" });
+      } finally {
+        authorized.planAdmission = null;
+        busy = false;
+      }
     }
     const hybrid = pathname === "/hybrid-decision";
     if (req.method !== "POST" || (!hybrid && pathname !== "/decision"))
@@ -194,6 +358,7 @@ export function createAgentServer({
         error: "TYPESAFE_AI_API_KEY is not configured on the local server",
       });
     let request;
+    let requestedPlan = null;
     try {
       const chunks = [];
       let length = 0;
@@ -207,8 +372,18 @@ export function createAgentServer({
       // planner will inject an independently validated server-owned plan here.
       if (hybrid && supplied?.plan !== null)
         return send(400, { error: "Browser-supplied plans are not accepted" });
+      // Only the server-owned validated plan can enter Jev's state. It is not
+      // silently substituted if the browser snapshot predates that plan.
+      if (hybrid && authorized?.planSession && authorized.gameId === supplied.game_id) {
+        const live = authorized.planSession.getPlan({
+          session_id: authorized.id, game_id: authorized.gameId });
+        if (live && live.source_tick <= supplied.snapshot_tick &&
+            supplied.snapshot_tick < live.expires_tick) {
+          requestedPlan = { game_id: authorized.gameId, ...live };
+        }
+      }
       const observation = hybrid
-        ? validateHybridInput(supplied)
+        ? validateHybridInput({ ...supplied, plan: requestedPlan })
         : validateObservation(supplied);
       // Candidate limits can fail even for a valid observation. Reject before
       // acquiring the single-flight lock, so this cannot strand the server busy.
@@ -262,8 +437,19 @@ export function createAgentServer({
       });
       if (!response.ok) throw new Error(`TypeSafe HTTP ${response.status}`);
       const answer = await response.json();
-      if (requireStartSession && session !== authorized)
+      if (requireStartSession && (session !== authorized ||
+          performance.now() >= authorized.expiresAt))
         throw new Error("Start session changed during inference");
+      const planStillApplicable = () => {
+        if (!hybrid || !requestedPlan) return true;
+        const stillLive = authorized.planSession?.getPlan({
+          session_id: authorized.id, game_id: authorized.gameId });
+        return Boolean(stillLive && stillLive.plan_version === requestedPlan.plan_version &&
+          stillLive.source_tick === requestedPlan.source_tick &&
+          request.state.snapshot_tick < stillLive.expires_tick);
+      };
+      if (!planStillApplicable())
+        throw new Error("Planner objective expired during Jev inference");
       const decision = {
         ...(hybrid
           ? parseHybridDecision(answer, request)
@@ -274,9 +460,17 @@ export function createAgentServer({
         timestamp: new Date().toISOString(),
         requestStartedAt,
         policy: hybrid ? HYBRID_POLICY_VERSION : POLICY_VERSION,
+        planProvenance: requestedPlan ? { provider: "official-copilot-sdk",
+          promptVersion: COPILOT_PLAN_PROMPT_VERSION,
+          version: requestedPlan.plan_version, source_tick: requestedPlan.source_tick } : null,
         request,
         decision,
       });
+      if (requireStartSession && (session !== authorized ||
+          performance.now() >= authorized.expiresAt))
+        throw new Error("Start session changed before decision response");
+      if (!planStillApplicable())
+        throw new Error("Planner objective expired before decision response");
       if (!res.destroyed) send(200, decision);
     } catch (error) {
       // Never relay arbitrary upstream bodies/errors; they may contain request credentials.
@@ -311,6 +505,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       apiKey: process.env.TYPESAFE_AI_API_KEY,
       model: process.env.TYPESAFE_MODEL || "jev-latest",
       enableHybridDecisions: process.env.OPENFRONT_HYBRID_EXPERIMENT === "1",
+      enableCopilotPlanner: process.env.OPENFRONT_COPILOT_PLANNER === "1",
       log: (record) => appendFile(logfile, JSON.stringify(record) + "\n"),
     });
     server.listen(8788, "127.0.0.1", () =>
