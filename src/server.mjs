@@ -99,6 +99,9 @@ const publicFiles = new Map([
     new URL("../web/hybrid-controller.js", import.meta.url),
   ],
   ["/plan-client.js", new URL("../web/plan-client.js", import.meta.url)],
+  ["/naval-spatial.js", new URL("../web/naval-spatial.js", import.meta.url)],
+  ["/naval-adapter.js", new URL("../web/naval-adapter.js", import.meta.url)],
+  ["/naval-observation.js", new URL("../web/naval-observation.js", import.meta.url)],
 ]);
 
 export function createAgentServer({
@@ -113,6 +116,7 @@ export function createAgentServer({
   ],
   minimumIntervalMs = 1000,
   enableHybridDecisions = false,
+  enableNavalDecisions = false,
   requireStartSession = true,
   enableCopilotPlanner = false,
   planner = null, // injectable for network-free tests; never browser-supplied
@@ -172,6 +176,7 @@ export function createAgentServer({
         policy: POLICY_VERSION,
         hybridPolicy: HYBRID_POLICY_VERSION,
         hybridEnabled: enableHybridDecisions,
+        navalEnabled: enableHybridDecisions && enableNavalDecisions && requireStartSession,
         plannerEnabled: enableHybridDecisions && enableCopilotPlanner && requireStartSession,
         planCallLimit: maxPlanRequestsPerSession,
         planCallsUsed: session?.planCount ?? 0,
@@ -473,6 +478,15 @@ export function createAgentServer({
         chunks.push(chunk);
       }
       const supplied = JSON.parse(Buffer.concat(chunks).toString());
+      // Naval actions are a separately approved experiment. A present,
+      // non-null raw proposal cannot reach TypeSafe without BOTH feature flags
+      // and an explicit local hybrid Start, even in legacy test mode.
+      if (hybrid && supplied && Object.hasOwn(supplied, "naval") &&
+          supplied.naval !== null &&
+          (!enableNavalDecisions || !enableHybridDecisions ||
+            !requireStartSession || !authorized || authorized.mode !== "hybrid")) {
+        return send(403, { error: "Naval decision endpoint is disabled" });
+      }
       // A browser may never claim an authoritative Copilot plan. The future
       // planner will inject an independently validated server-owned plan here.
       if (hybrid && supplied?.plan !== null)
@@ -610,6 +624,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       apiKey: process.env.TYPESAFE_AI_API_KEY,
       model: process.env.TYPESAFE_MODEL || "jev-latest",
       enableHybridDecisions: process.env.OPENFRONT_HYBRID_EXPERIMENT === "1",
+      enableNavalDecisions: process.env.OPENFRONT_NAVAL_EXPERIMENT === "1",
       enableCopilotPlanner: process.env.OPENFRONT_COPILOT_PLANNER === "1",
       log: (record) => appendFile(logfile, JSON.stringify(record) + "\n"),
     });
