@@ -1,6 +1,6 @@
 # OpenFront · Jev + Copilot hybrid agent (in development)
 
-Current playable slice: a local-solo OpenFront bot using TypeSafe Jev to select bounded land actions. **Current experiment: `land-strategy-v4.2`.** Its reviewed land priorities favor growth-preserving wilderness expansion, a 20% tribe ceiling, contested-tribe conquest gold, and patient defense against combined incoming force. This is **not yet a competitive hybrid bot**: spatial building actions and the Copilot strategic planner are separately tested prototypes, not connected to live games. See the [hybrid spatial design](docs/hybrid-agent-design.html) and [primary-source Jev guidance](docs/jev-founder-guidance.md).
+Current playable slice: a local-solo OpenFront bot using TypeSafe Jev to select bounded land actions. **Current experiment: `land-strategy-v4.2`.** Its reviewed land priorities favor growth-preserving wilderness expansion, a 20% tribe ceiling, contested-tribe conquest gold, and patient defense against combined incoming force. This is **not yet a competitive hybrid bot**: an opt-in local Hybrid panel can offer worker-checked City candidates beside land attacks, but no live model-selected City build or Copilot strategic plan has been verified yet. The Copilot planner is an isolated, network-free-tested connector, not connected to gameplay. See the [hybrid spatial design](docs/hybrid-agent-design.html) and [primary-source Jev guidance](docs/jev-founder-guidance.md).
 
 ## What Jev sees and can do
 
@@ -35,7 +35,7 @@ The model selects the action. The harness does not substitute a heuristic, prefe
 
 ## Run
 
-Requires Node 22+, the sibling `../OpenFrontIO` checkout and its installed dependencies. This project has no npm dependencies.
+Requires Node 22+, the sibling `../OpenFrontIO` checkout and its installed dependencies. Run `npm ci` to install the pinned official GitHub Copilot SDK dependency; the standard land mode does not call Copilot.
 
 ```bash
 cd ~/dev/openfront-agent
@@ -45,7 +45,7 @@ source ~/.secrets
 npm start
 ```
 
-The sidecar reads `TYPESAFE_AI_API_KEY`, listens on `127.0.0.1:8788`, and calls `https://api.typesafe.ai/v1/systemone`. The key remains server-side and is not logged. Optional `TYPESAFE_MODEL` overrides `jev-latest`.
+The sidecar reads `TYPESAFE_AI_API_KEY`, listens on `127.0.0.1:8788`, and calls `https://api.typesafe.ai/v1/systemone` only after an explicit local Start. It requires a short-lived session token for every paid land/hybrid decision; Stop or the call cap revokes it. The key remains server-side and is not logged. Optional `TYPESAFE_MODEL` overrides `jev-latest`. The pinned Copilot SDK is not called in the current playable controller.
 
 Start OpenFront in another terminal if needed:
 
@@ -54,12 +54,12 @@ cd ~/dev/OpenFrontIO
 SKIP_BROWSER_OPEN=true npm run dev
 ```
 
-Open **http://localhost:9000/** in hardware-accelerated Chrome, start a **Solo** match, spawn, and click **Start Jev** in the panel. No model requests happen before Start. The panel exposes the exact model state and candidate descriptions under **Input and available actions**, plus recent decisions and outcomes.
+Open **http://localhost:9000/** in hardware-accelerated Chrome, start a **Solo** match, spawn, and click **Start Jev** in the panel. No model requests happen before Start. For the separate experimental **Start Hybrid** button, start the sidecar with `OPENFRONT_HYBRID_EXPERIMENT=1 npm start` and restart the match. Hybrid performs a bounded City-site scan at most once every 15 seconds (not on every Jev call). It uses land-only Jev decisions when no fresh affordable City sites have passed worker checks; the panel states this mode explicitly. The Copilot planner is not yet in that loop. The panel shows the exact model state, candidate descriptions, decisions and outcomes.
 
 - Default: one request per second, measured start-to-start, at most 30 calls per Start. Both are adjustable.
 - At most one in flight. Slow responses delay the next call; missed periods are never queued/caught up.
 - The sidecar independently enforces single-flight and one-second upstream start spacing.
-- Only loopback-hosted development singleplayer is supported. No public/private multiplayer, replays, naval actions, building, diplomacy, or cancelling existing attacks in this version.
+- Only loopback-hosted development singleplayer is supported. Standard mode emits land attacks only. Opt-in Hybrid can additionally emit a normal **City** intent after Jev selects an opaque legal site and the worker revalidates it; no other building types, upgrades, public/private multiplayer, replays, naval actions, diplomacy or attack cancellation are wired yet.
 - If the sidecar starts after a match, start a new match to load the panel. After a schema/prompt/bridge update, reinstall the bridge if changed, restart the sidecar, and reload the game page. Older schemas are rejected, not guessed.
 
 ## Guards and lifecycle
@@ -81,9 +81,9 @@ The game-state adapter reads `GameView`, asks the simulation worker for borders 
 | `web/observation.js`                   | Shared strict schema, computed features, dynamic action candidates                             |
 | `web/game-adapter.js`                  | Border collection, worker legality queries, target-ID mapping and attack execution             |
 | `src/policy.mjs`                       | Reviewed land-strategy prompt and Choice response validation                                  |
-| `src/server.mjs`                       | Local HTTP service, credentials, TypeSafe calls, pacing and JSONL logging                      |
+| `src/server.mjs`                       | Local HTTP service, Start sessions, credentials, TypeSafe calls, pacing and JSONL logging      |
 | `web/controller.js`                    | Single-flight loop, snapshots, lifecycle, freshness and candidate validation                   |
-| `web/agent.js`                         | In-game controls and input/action/decision inspector                                           |
+| `web/agent.js`                         | In-game standard/Hybrid Start, Stop, session lifecycle and decision inspector                  |
 | `integration/WildernessAgentBridge.ts` | Small dev-only connection to OpenFront; historical filename retained for upgrade compatibility |
 | `scripts/install-bridge.mjs`           | Installs/removes that bridge and the client start/stop hook                                    |
 

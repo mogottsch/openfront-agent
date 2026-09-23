@@ -120,7 +120,7 @@ test("rejects missing capacity, extra state, invalid counts, and unsupported act
 });
 
 async function serve(t, options) {
-  const server = createAgentServer(options);
+  const server = createAgentServer({ requireStartSession: false, ...options });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(
     () =>

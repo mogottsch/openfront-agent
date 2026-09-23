@@ -82,7 +82,7 @@ const fakeResponse = (request) => ({
   ),
 });
 async function serve(t, options) {
-  const server = createAgentServer(options);
+  const server = createAgentServer({ requireStartSession: false, ...options });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(
     () =>
@@ -93,12 +93,13 @@ async function serve(t, options) {
   );
   return `http://127.0.0.1:${server.address().port}`;
 }
-const post = (url, path, payload) =>
+const post = (url, path, payload, token) =>
   fetch(url + path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Origin: "http://localhost:9000",
+      ...(token ? { "X-Agent-Session": token } : {}),
     },
     body: JSON.stringify(payload),
   });
@@ -147,6 +148,75 @@ test("hybrid Jev endpoint validates three answers, preserves site identity and s
   const another = await post(url, "/hybrid-decision", input);
   assert.equal(another.status, 200);
   assert.ok(calls[1].start - calls[0].start >= 48);
+});
+
+test("server requires explicit Start token before either paid route, bounds calls and revokes on Stop", async (t) => {
+  let calls = 0;
+  const url = await serve(t, {
+    apiKey: "fake",
+    requireStartSession: true,
+    enableHybridDecisions: true,
+    minimumIntervalMs: 10,
+    fetchImpl: async (_endpoint, init) => {
+      calls++;
+      assert.ok(!init.headers["X-Agent-Session"]);
+      return new Response(JSON.stringify(fakeResponse(JSON.parse(init.body))));
+    },
+  });
+  const preflight = await fetch(url + "/session", {
+    method: "OPTIONS",
+    headers: {
+      Origin: "http://localhost:9000",
+      "Access-Control-Request-Method": "DELETE",
+      "Access-Control-Request-Headers": "X-Agent-Session",
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.match(preflight.headers.get("access-control-allow-methods"), /DELETE/);
+  assert.match(
+    preflight.headers.get("access-control-allow-headers"),
+    /X-Agent-Session/,
+  );
+  assert.equal((await post(url, "/decision", observation())).status, 403);
+  assert.equal(
+    (await post(url, "/hybrid-decision", hybridInput())).status,
+    403,
+  );
+  assert.equal(calls, 0);
+  const before = await (await fetch(url + "/health")).json();
+  assert.equal(before.requiresStart, true);
+  assert.equal(before.sessionActive, false);
+  const started = await post(url, "/session", { mode: "hybrid", limit: 1 });
+  assert.equal(started.status, 200);
+  const { token } = await started.json();
+  assert.match(token, /^[A-Za-z0-9_-]+$/);
+  assert.equal(
+    (await post(url, "/hybrid-decision", hybridInput(), "wrong")).status,
+    403,
+  );
+  assert.equal(
+    (await post(url, "/hybrid-decision", hybridInput(), token)).status,
+    200,
+  );
+  assert.equal(calls, 1);
+  assert.equal(
+    (await post(url, "/hybrid-decision", hybridInput(), token)).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetch(url + "/session", {
+        method: "DELETE",
+        headers: { Origin: "http://localhost:9000", "X-Agent-Session": token },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await post(url, "/decision", observation(), token)).status,
+    403,
+  );
+  assert.equal(calls, 1);
 });
 
 test("experimental hybrid endpoint is default-off and cannot make a paid call before opt-in", async (t) => {

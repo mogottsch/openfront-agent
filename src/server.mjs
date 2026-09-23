@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { randomBytes } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -30,6 +31,10 @@ const publicFiles = new Map([
     "/building-adapter.js",
     new URL("../web/building-adapter.js", import.meta.url),
   ],
+  [
+    "/hybrid-controller.js",
+    new URL("../web/hybrid-controller.js", import.meta.url),
+  ],
 ]);
 
 export function createAgentServer({
@@ -44,9 +49,12 @@ export function createAgentServer({
   ],
   minimumIntervalMs = 1000,
   enableHybridDecisions = false,
+  requireStartSession = true,
 } = {}) {
   let busy = false;
   let lastCall = -Infinity;
+  let session = null;
+  let activeRequestAbort = null;
   return createServer(async (req, res) => {
     const send = (status, body) => {
       res.writeHead(status, {
@@ -65,8 +73,14 @@ export function createAgentServer({
     if (origin) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader(
+        "Access-Control-Allow-Methods",
+        "GET, POST, DELETE, OPTIONS",
+      );
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Content-Type, X-Agent-Session",
+      );
     }
     if (req.method === "OPTIONS") {
       res.writeHead(204);
@@ -81,6 +95,10 @@ export function createAgentServer({
         policy: POLICY_VERSION,
         hybridPolicy: HYBRID_POLICY_VERSION,
         hybridEnabled: enableHybridDecisions,
+        requiresStart: requireStartSession,
+        sessionActive: Boolean(
+          session && performance.now() < session.expiresAt,
+        ),
       });
     }
     if (req.method === "GET" && publicFiles.has(pathname)) {
@@ -95,6 +113,60 @@ export function createAgentServer({
         return send(500, { error: "Could not load agent module" });
       }
     }
+    if (pathname === "/session" && req.method === "POST") {
+      if (!(req.headers["content-type"] ?? "").startsWith("application/json"))
+        return send(415, { error: "JSON required" });
+      if (!apiKey) return send(503, { error: "TypeSafe key unavailable" });
+      let value;
+      try {
+        const chunks = [];
+        let length = 0;
+        for await (const chunk of req) {
+          length += chunk.length;
+          if (length > 256)
+            return send(413, { error: "Session request too large" });
+          chunks.push(chunk);
+        }
+        value = JSON.parse(Buffer.concat(chunks).toString());
+      } catch {
+        return send(400, { error: "Invalid Start request" });
+      }
+      if (
+        value === null ||
+        typeof value !== "object" ||
+        Array.isArray(value) ||
+        Object.keys(value).length !== 2 ||
+        !Object.hasOwn(value, "limit") ||
+        !Object.hasOwn(value, "mode") ||
+        !Number.isInteger(value.limit) ||
+        value.limit < 1 ||
+        value.limit > 300 ||
+        !["land", "hybrid", "benchmark"].includes(value.mode) ||
+        (value.mode === "hybrid" && !enableHybridDecisions)
+      )
+        return send(400, { error: "Invalid Start mode or request cap" });
+      activeRequestAbort?.abort();
+      session = {
+        token: randomBytes(24).toString("base64url"),
+        mode: value.mode,
+        limit: value.limit,
+        count: 0,
+        expiresAt: performance.now() + 15 * 60_000,
+      };
+      return send(200, {
+        token: session.token,
+        mode: session.mode,
+        limit: session.limit,
+        expires_in_ms: 15 * 60_000,
+      });
+    }
+    if (pathname === "/session" && req.method === "DELETE") {
+      if (!session || req.headers["x-agent-session"] !== session.token)
+        return send(403, { error: "No active Start session" });
+      activeRequestAbort?.abort();
+      session = null;
+      return send(200, { stopped: true });
+    }
     const hybrid = pathname === "/hybrid-decision";
     if (req.method !== "POST" || (!hybrid && pathname !== "/decision"))
       return send(404, { error: "Not found" });
@@ -103,6 +175,18 @@ export function createAgentServer({
     // presenting this experiment as server-verified Start-gated.
     if (hybrid && !enableHybridDecisions)
       return send(403, { error: "Hybrid decision endpoint is disabled" });
+    const authorized = requireStartSession ? session : null;
+    if (
+      requireStartSession &&
+      (!authorized ||
+        req.headers["x-agent-session"] !== authorized.token ||
+        performance.now() >= authorized.expiresAt ||
+        authorized.count >= authorized.limit ||
+        (hybrid && authorized.mode !== "hybrid"))
+    )
+      return send(403, {
+        error: "Explicit local Start required or session expired",
+      });
     if (!(req.headers["content-type"] ?? "").startsWith("application/json"))
       return send(415, { error: "JSON required" });
     if (!apiKey)
@@ -155,8 +239,17 @@ export function createAgentServer({
         );
       }
       controller.signal.throwIfAborted();
+      if (
+        requireStartSession &&
+        (session !== authorized ||
+          performance.now() >= authorized.expiresAt ||
+          authorized.count >= authorized.limit)
+      )
+        throw new Error("Start session changed or expired before inference");
       const start = performance.now();
       lastCall = start;
+      if (requireStartSession) authorized.count++;
+      activeRequestAbort = controller;
       const requestStartedAt = new Date().toISOString();
       const response = await fetchImpl("https://api.typesafe.ai/v1/systemone", {
         method: "POST",
@@ -169,6 +262,8 @@ export function createAgentServer({
       });
       if (!response.ok) throw new Error(`TypeSafe HTTP ${response.status}`);
       const answer = await response.json();
+      if (requireStartSession && session !== authorized)
+        throw new Error("Start session changed during inference");
       const decision = {
         ...(hybrid
           ? parseHybridDecision(answer, request)
@@ -193,6 +288,7 @@ export function createAgentServer({
     } finally {
       clearTimeout(timeout);
       res.off("close", onClose);
+      if (activeRequestAbort === controller) activeRequestAbort = null;
       busy = false;
     }
   });
