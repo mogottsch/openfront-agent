@@ -205,6 +205,34 @@ test("a tick advancing during the final worker request discards the permit", asy
   assert.equal(f.sent.length, 0);
 });
 
+test("Stop/restart during final worker wait consumes permit without emitting a City intent", async () => {
+  const f = fixture();
+  const p = await f.adapter.propose(opts);
+  const id = p.candidates[0].id;
+  assert.equal(await f.adapter.canExecute(id), true);
+  let release;
+  f.setWorker(() => new Promise((resolve) => { release = resolve; }));
+  let generation = 7;
+  const execution = f.adapter.execute(id, () => generation === 7);
+  generation = 8; // Stop followed by Start, same game/tick and worker still busy
+  release([{ type: "City", canBuild: 0, canUpgrade: false, cost: 10n }]);
+  assert.equal(await execution, false);
+  assert.equal(await f.adapter.execute(id, () => true), false); // permit consumed
+  assert.equal(f.sent.length, 0);
+  assert.equal(f.calls.length, 3); // proposal, canExecute, final worker
+});
+
+test("invalid or throwing run guard fails closed before worker and save_gold", async () => {
+  const f = fixture();
+  const p = await f.adapter.propose(opts);
+  const id = p.candidates[0].id;
+  assert.equal(await f.adapter.canExecute(id), true);
+  assert.equal(await f.adapter.execute(id, () => { throw new Error("cancelled"); }), false);
+  assert.equal(f.calls.length, 2);
+  assert.equal(await f.adapter.execute(p.save_gold.id, () => false), false);
+  assert.equal(f.sent.length, 0);
+});
+
 test("execution rejects changing ownership, myPlayer, gold and worker result", async () => {
   for (const change of ["owner", "player", "gold", "worker"]) {
     const f = fixture();

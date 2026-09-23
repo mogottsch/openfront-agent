@@ -34,6 +34,9 @@ function validGold(value) {
  * read() must return {ready:boolean,tick:number}; tick is checked against
  * game.ticks() before/after every worker await. game.gameID() is preferred;
  * absent that, propose({mapId}) must provide a stable game/map identity.
+ * execute(id, isCurrent=()=>true) accepts a synchronous, generation-bound
+ * predicate from the caller. It is checked again after the final worker wait
+ * and immediately before sendBuild so Stop/restart never emits a late intent.
  */
 export function createBuildingAdapter({ game, read, sendBuild, cityUnit }) {
   if (!game || typeof read !== "function" || typeof sendBuild !== "function" ||
@@ -268,10 +271,18 @@ export function createBuildingAdapter({ game, read, sendBuild, cityUnit }) {
       return true;
     },
 
-    async execute(candidateId) {
+    async execute(candidateId, isCurrent = () => true) {
       const checkedPermit = permit;
       permit = null; // consume before ANY await, including failed sends
       checking++;
+      // Generation-bound caller guard: a Stop/restart may happen while the
+      // final buildables() worker request is outstanding. Fail closed if its
+      // predicate throws, is absent, or no longer identifies this run.
+      const stillCurrent = () => {
+        try { return typeof isCurrent === "function" && isCurrent() === true; }
+        catch { return false; }
+      };
+      if (!stillCurrent()) return false;
       const snapshot = requireFreshProposal();
       if (!snapshot || typeof candidateId !== "string") return false;
       if (candidateId === snapshot.saveId) return true; // no worker, no intent
@@ -283,7 +294,7 @@ export function createBuildingAdapter({ game, read, sendBuild, cityUnit }) {
       const result = await checkedCity(selected.tile, snapshot, checkedPermit.tick);
       if (!result || result.reason || result.cost !== selected.cost ||
           result.gold !== checkedPermit.gold || !current(snapshot, checkedPermit.tick) ||
-          !owns(selected.tile, snapshot)) return false;
+          !owns(selected.tile, snapshot) || !stillCurrent()) return false;
       const key = `${snapshot.map_id}:${selected.tile}`;
       if (pending.has(key)) return false;
       // Reserve synchronously before invoking the callback: reentrant callers
@@ -291,6 +302,10 @@ export function createBuildingAdapter({ game, read, sendBuild, cityUnit }) {
       // emitted. A throw/non-boolean result is ambiguous and stays pending
       // until observed or the conservative review window expires.
       pending.set(key, { tile: selected.tile, tick: game.ticks(), map_id: snapshot.map_id });
+      if (!stillCurrent()) {
+        pending.delete(key);
+        return false;
+      }
       let outcome;
       try {
         outcome = sendBuild(cityUnit, selected.tile);
