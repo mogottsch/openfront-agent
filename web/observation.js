@@ -163,7 +163,7 @@ export function validateObservation(value) {
   if (Object.hasOwn(value, "tribe_focus")) {
     focus = value.tribe_focus;
     if (focus !== null) {
-      exact(focus, [
+      const focusKeys = [
         "id",
         "alive",
         "type",
@@ -171,7 +171,13 @@ export function validateObservation(value) {
         "territory_tiles",
         "adjacent",
         "can_attack",
-      ]);
+      ];
+      exact(
+        focus,
+        Object.hasOwn(focus, "progress")
+          ? [...focusKeys, "progress"]
+          : focusKeys,
+      );
       integer(focus.id, 1, 4095);
       integer(focus.troops);
       integer(focus.territory_tiles);
@@ -185,6 +191,38 @@ export function validateObservation(value) {
         (focus.can_attack && !focus.adjacent)
       )
         fail();
+      if (Object.hasOwn(focus, "progress")) {
+        const p = focus.progress;
+        exact(p, [
+          "reference_kind",
+          "reference_tick",
+          "reference_tiles",
+          "elapsed_ticks",
+          "land_intents_emitted",
+          "last_land_send_percent",
+        ]);
+        integer(p.reference_tick);
+        integer(p.reference_tiles);
+        integer(p.elapsed_ticks);
+        if (
+          ![
+            "first_emitted_land_intent",
+            "first_authoritative_focus_observation",
+          ].includes(p.reference_kind) ||
+          (p.land_intents_emitted !== null &&
+            (!Number.isInteger(p.land_intents_emitted) ||
+              p.land_intents_emitted < 1 ||
+              p.land_intents_emitted > 1e9)) ||
+          ![null, 10, 20].includes(p.last_land_send_percent) ||
+          (p.reference_kind === "first_emitted_land_intent" &&
+            (p.land_intents_emitted === null ||
+              p.last_land_send_percent === null)) ||
+          (p.reference_kind === "first_authoritative_focus_observation" &&
+            (p.land_intents_emitted !== null ||
+              p.last_land_send_percent !== null))
+        )
+          fail();
+      }
       const neighbor = neighbors.find((n) => n.id === focus.id);
       if (
         Boolean(neighbor) !== focus.adjacent ||
@@ -368,6 +406,20 @@ export function modelState(observation) {
     tribe_focus: o.tribe_focus
       ? {
           ...o.tribe_focus,
+          ...(o.tribe_focus.progress
+            ? {
+                progress: {
+                  ...o.tribe_focus.progress,
+                  territory_delta_since_reference:
+                    o.tribe_focus.territory_tiles -
+                    o.tribe_focus.progress.reference_tiles,
+                  elapsed_seconds: round(
+                    o.tribe_focus.progress.elapsed_ticks / 10,
+                    1,
+                  ),
+                },
+              }
+            : {}),
           our_active_attack_troops: sum(
             o.outgoing_attacks.filter(
               (a) => active(a) && a.target_id === o.tribe_focus.id,

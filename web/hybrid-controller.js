@@ -6,6 +6,7 @@ import {
   projectTribeFocus,
   recoverSingleActiveTribe,
   selectedTribeForFocus,
+  recordTribeLandIntent,
 } from "./tribe-focus.js";
 import {
   actionCriteria,
@@ -110,6 +111,19 @@ export class HybridController extends LandController {
     this.nextCityScanAt = 0;
     this.cityProposal = null;
     this.cityProposalAt = -Infinity;
+  }
+
+  rememberEmittedTribeLandIntent(action, land, tick) {
+    const tribeId = selectedTribeForFocus(action, land);
+    if (tribeId === null) return;
+    this.focusProgress = recordTribeLandIntent(
+      this.focusTribeId === tribeId ? this.focusProgress : null,
+      land,
+      tribeId,
+      action.fraction,
+      tick,
+    );
+    this.focusTribeId = tribeId;
   }
 
   setDefensePostAdapter(adapter) {
@@ -374,7 +388,11 @@ export class HybridController extends LandController {
         this.onUpdate({ status: "Discarded stale land observation" });
         return;
       }
-      const focus = projectTribeFocus(snapshot, this.focusTribeId);
+      const focus = projectTribeFocus(
+        snapshot,
+        this.focusTribeId,
+        this.focusProgress,
+      );
       if (focus.kind === "unavailable") {
         this.onUpdate({
           status: `Tribe focus ${this.focusTribeId} unavailable (${focus.reason}); no paid call`,
@@ -386,12 +404,16 @@ export class HybridController extends LandController {
           status: `Focused tribe ${this.focusTribeId} confirmed defeated; new targets may be considered`,
         });
         this.focusTribeId = null;
+        this.focusProgress = null;
+      } else if (focus.kind === "active") {
+        this.focusProgress = focus.history;
       }
       const land = validateObservation(focus.observation);
       if (this.focusTribeId === null) {
         const recovered = recoverSingleActiveTribe(land);
         if (recovered !== null) {
           this.focusTribeId = recovered;
+          this.focusProgress = null; // prior land send count is unknown
           this.onUpdate({
             status: `Recorded ongoing attack on tribe ${recovered} as current focus`,
           });
@@ -721,8 +743,11 @@ export class HybridController extends LandController {
             )
           ) {
             outcome = "transport boat intent sent";
-            if (site.target_type === "tribe")
+            if (site.target_type === "tribe") {
+              if (this.focusTribeId !== site.target_owner_id)
+                this.focusProgress = null; // boat does not imply a land send
               this.focusTribeId = site.target_owner_id;
+            }
           } else outcome = "boat intent not sent";
         } else if (decision.kind === "land") {
           chosen = offered.land[decision.selected];
@@ -735,8 +760,7 @@ export class HybridController extends LandController {
           else if (!legal) outcome = "discarded: target no longer legal";
           else if (this.adapter.execute(chosen)) {
             outcome = "land attack intent sent";
-            const tribeId = selectedTribeForFocus(chosen, land);
-            if (tribeId !== null) this.focusTribeId = tribeId;
+            this.rememberEmittedTribeLandIntent(chosen, land, snapshot.tick);
           } else outcome = "not sent";
         } else if (
           decision.kind !== "wait" ||
@@ -756,8 +780,7 @@ export class HybridController extends LandController {
           else if (!legal) outcome = "discarded: target no longer legal";
           else if (this.adapter.execute(chosen)) {
             outcome = "land attack intent sent";
-            const tribeId = selectedTribeForFocus(chosen, land);
-            if (tribeId !== null) this.focusTribeId = tribeId;
+            this.rememberEmittedTribeLandIntent(chosen, land, snapshot.tick);
           } else outcome = "not sent";
         }
       }

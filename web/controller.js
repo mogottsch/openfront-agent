@@ -8,6 +8,7 @@ import {
   projectTribeFocus,
   recoverSingleActiveTribe,
   selectedTribeForFocus,
+  recordTribeLandIntent,
 } from "./tribe-focus.js";
 
 export class LandController {
@@ -34,6 +35,7 @@ export class LandController {
     this.busy = false;
     this.nextAllowedStart = 0;
     this.focusTribeId = null; // persists across Stop/Start in the same game
+    this.focusProgress = null; // factual emitted intents, not presumed conquests
   }
 
   start({ intervalMs = 1000, limit = 30 } = {}) {
@@ -113,7 +115,11 @@ export class LandController {
         this.onUpdate({ status: "Discarded stale observation" });
         return;
       }
-      const focus = projectTribeFocus(snapshot, this.focusTribeId);
+      const focus = projectTribeFocus(
+        snapshot,
+        this.focusTribeId,
+        this.focusProgress,
+      );
       if (focus.kind === "unavailable") {
         this.onUpdate({
           status: `Tribe focus ${this.focusTribeId} unavailable (${focus.reason}); no paid call`,
@@ -125,12 +131,16 @@ export class LandController {
           status: `Focused tribe ${this.focusTribeId} confirmed defeated; new targets may be considered`,
         });
         this.focusTribeId = null;
+        this.focusProgress = null;
+      } else if (focus.kind === "active") {
+        this.focusProgress = focus.history;
       }
       const observation = validateObservation(focus.observation);
       if (this.focusTribeId === null) {
         const recovered = recoverSingleActiveTribe(observation);
         if (recovered !== null) {
           this.focusTribeId = recovered;
+          this.focusProgress = null; // unknown prior sends on a recovered focus
           this.onUpdate({
             status: `Recorded ongoing attack on tribe ${recovered} as current focus`,
           });
@@ -172,7 +182,16 @@ export class LandController {
         else if (this.adapter.execute(action)) {
           outcome = "land attack intent sent";
           const tribeId = selectedTribeForFocus(action, observation);
-          if (tribeId !== null) this.focusTribeId = tribeId;
+          if (tribeId !== null) {
+            this.focusProgress = recordTribeLandIntent(
+              this.focusTribeId === tribeId ? this.focusProgress : null,
+              observation,
+              tribeId,
+              action.fraction,
+              snapshot.tick,
+            );
+            this.focusTribeId = tribeId;
+          }
         } else outcome = "not sent";
       }
       if (!isCurrent()) return;

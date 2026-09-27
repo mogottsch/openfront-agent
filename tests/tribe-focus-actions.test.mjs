@@ -185,6 +185,48 @@ test("optional decimal gold is exact and cannot be forged with invalid shapes", 
   assert.throws(() => validateObservation(o)); // neighbor2 still borders us
 });
 
+test("focus history is bounded, source-labelled and its progress arithmetic belongs to code", () => {
+  const o = withTribes();
+  o.tribe_focus = {
+    ...focus(),
+    progress: {
+      reference_kind: "first_emitted_land_intent",
+      reference_tick: 100,
+      reference_tiles: 900,
+      elapsed_ticks: 30,
+      land_intents_emitted: 2,
+      last_land_send_percent: 10,
+    },
+  };
+  const p = modelState(o).tribe_focus.progress;
+  assert.equal(p.territory_delta_since_reference, -400);
+  assert.equal(p.elapsed_seconds, 3);
+  for (const mutation of [
+    (x) => {
+      x.reference_kind = "fabricated";
+    },
+    (x) => {
+      x.reference_tiles = -1;
+    },
+    (x) => {
+      x.elapsed_ticks = -1;
+    },
+    (x) => {
+      x.last_land_send_percent = 50;
+    },
+    (x) => {
+      x.land_intents_emitted = null;
+    },
+    (x) => {
+      x.extra = "not observed";
+    },
+  ]) {
+    const changed = structuredClone(o);
+    mutation(changed.tribe_focus.progress);
+    assert.throws(() => validateObservation(changed));
+  }
+});
+
 test("naval branch cannot sneak new coasts around an unfinished tribe", () => {
   const o = withTribes();
   o.outgoing_attacks = [active(2, 1500)];

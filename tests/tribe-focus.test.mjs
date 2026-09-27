@@ -5,6 +5,7 @@ import {
   recoverSingleActiveTribe,
   projectTribeFocus,
   selectedTribeForFocus,
+  recordTribeLandIntent,
 } from "../web/tribe-focus.js";
 import { buildActions, modelState } from "../web/observation.js";
 
@@ -143,6 +144,66 @@ test("only real isAlive(false) clears focus; unavailable or vanished neighbor do
     undefined,
   );
   assert.ok(buildActions(stillAlive.observation).attack_wilderness_10); // reconnect only
+});
+
+test("factual focus history captures six emitted 10% sends and rising territory without attributing cause", () => {
+  const o = tribeSnapshot();
+  o.neighbors[0].territory_tiles = 1925;
+  let history = recordTribeLandIntent(null, o, 2, 0.1, 100);
+  for (let i = 1; i < 6; i++) {
+    o.neighbors[0].territory_tiles = 1925 + i * 244;
+    history = recordTribeLandIntent(history, o, 2, 0.1, 100 + i * 10);
+  }
+  assert.equal(history.reference_tiles, 1925);
+  assert.equal(history.reference_tick, 100);
+  assert.equal(history.land_intents_emitted, 6);
+  assert.equal(history.last_land_send_percent, 10);
+  const next = projectTribeFocus(
+    {
+      tick: 330,
+      observation: o,
+      focus_status: status({ tick: 330, territory_tiles: 3145 }),
+    },
+    2,
+    history,
+  );
+  assert.equal(next.kind, "active");
+  assert.equal(next.observation.tribe_focus.progress.elapsed_ticks, 230);
+  assert.equal(
+    modelState(next.observation).tribe_focus.progress
+      .territory_delta_since_reference,
+    1220,
+  );
+  assert.equal(
+    modelState(next.observation).tribe_focus.progress.elapsed_seconds,
+    23,
+  );
+  // The count describes our emitted intents, not engine acceptance or cause of tile growth.
+});
+
+test("recovered focus marks unknown prior sends; first new emitted land send resets provenance", () => {
+  const o = tribeSnapshot();
+  const recovered = projectTribeFocus(
+    {
+      tick: 100,
+      observation: o,
+      focus_status: status({ territory_tiles: 500 }),
+    },
+    2,
+  );
+  assert.equal(recovered.kind, "active");
+  assert.equal(
+    recovered.history.reference_kind,
+    "first_authoritative_focus_observation",
+  );
+  assert.equal(recovered.history.land_intents_emitted, null);
+  const now = recordTribeLandIntent(recovered.history, o, 2, 0.2, 101);
+  assert.equal(now.reference_kind, "first_emitted_land_intent");
+  assert.equal(now.reference_tick, 101);
+  assert.equal(now.reference_tiles, o.neighbors[0].territory_tiles);
+  assert.equal(now.land_intents_emitted, 1);
+  assert.equal(now.last_land_send_percent, 20);
+  assert.throws(() => recordTribeLandIntent(null, o, 2, 0.3, 101));
 });
 
 test("only an actually emitted tribe attack establishes persistent focus", () => {

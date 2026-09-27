@@ -236,6 +236,11 @@ test("controller persists Jev's tribe focus after the outgoing stack ends", asyn
   await setImmediate();
   assert.deepEqual(s.sent, [{ target: 2, fraction: 0.1 }]);
   assert.equal(s.controller.focusTribeId, 2);
+  assert.equal(
+    s.controller.focusProgress.reference_kind,
+    "first_emitted_land_intent",
+  );
+  assert.equal(s.controller.focusProgress.land_intents_emitted, 1);
   s.input.outgoing_attacks = []; // one-shot push ended, tribe still alive
   s.setTime(1000);
   s.status.tick += 10;
@@ -243,6 +248,14 @@ test("controller persists Jev's tribe focus after the outgoing stack ends", asyn
   await setImmediate();
   assert.equal(s.controller.focusTribeId, 2);
   assert.equal(s.observed[1].tribe_focus.id, 2);
+  assert.deepEqual(s.observed[1].tribe_focus.progress, {
+    reference_kind: "first_emitted_land_intent",
+    reference_tick: 100,
+    reference_tiles: 100,
+    elapsed_ticks: 10,
+    land_intents_emitted: 1,
+    last_land_send_percent: 10,
+  });
   assert.deepEqual(s.sent, [{ target: 2, fraction: 0.1 }]); // Jev's wait remains wait
   const second = s.events.filter((x) => x.decision).at(-1).decision;
   assert.equal(second.observation.strategy.mode, "finish_focused_tribe");

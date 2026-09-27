@@ -599,6 +599,12 @@ test("Hybrid persists an emitted tribe attack as focus after its stack expires",
   assert.equal(s.controller.focusTribeId, 2);
   const second = s.calls.filter((x) => x.kind === "jev").at(-1).input;
   assert.equal(second.land.tribe_focus.id, 2);
+  assert.equal(second.land.tribe_focus.progress.land_intents_emitted, 1);
+  assert.equal(
+    second.land.tribe_focus.progress.reference_kind,
+    "first_emitted_land_intent",
+  );
+  assert.equal(second.land.tribe_focus.progress.elapsed_ticks, 10);
   assert.equal(second.land.outgoing_attacks.length, 0);
   assert.deepEqual(
     s.sends.map((x) => x.kind),

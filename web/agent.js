@@ -278,8 +278,12 @@ export function mount(connection) {
       // Both panels act in the SAME match. Carry Moritz's already-selected
       // unfinished tribe objective across land/Hybrid mode switches, never
       // infer conquest from Stop or from an exhausted outgoing stack.
-      if (activeController && activeController !== controller)
+      if (activeController && activeController !== controller) {
         controller.focusTribeId = activeController.focusTribeId;
+        controller.focusProgress = activeController.focusProgress
+          ? { ...activeController.focusProgress }
+          : null;
+      }
       activeController?.stop("Switching controller");
       activeController = null;
       closeSession();
