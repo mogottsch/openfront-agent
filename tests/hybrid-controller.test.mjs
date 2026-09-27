@@ -200,6 +200,9 @@ function setup({
   navalPropose,
   defense,
   defensePropose,
+  cityAffordable,
+  postAffordable,
+  hasOwnedShore,
 } = {}) {
   let time = 0;
   const status = { ready: true, ended: false, tick: 100 };
@@ -280,6 +283,30 @@ function setup({
     planClient: planClient ?? null,
     navalAdapter: navy,
     defensePostAdapter: postAdapter,
+    ...(cityAffordable !== undefined
+      ? {
+          canAffordCity: async () =>
+            typeof cityAffordable === "function"
+              ? cityAffordable()
+              : cityAffordable,
+        }
+      : {}),
+    ...(postAffordable !== undefined
+      ? {
+          canAffordDefensePost: async () =>
+            typeof postAffordable === "function"
+              ? postAffordable()
+              : postAffordable,
+        }
+      : {}),
+    ...(hasOwnedShore !== undefined
+      ? {
+          hasOwnedShore: async () =>
+            typeof hasOwnedShore === "function"
+              ? hasOwnedShore()
+              : hasOwnedShore,
+        }
+      : {}),
     decideLand: async () => ({ action: "wait", confidence: 1 }),
     decideHybridDecomposed: decideHybridDecomposed
       ? async (input, signal) => {
@@ -395,6 +422,122 @@ test("invented boat size cannot bypass the offered Choice", async () => {
   await setImmediate();
   assert.deepEqual(s.sends, []);
   assert.match(s.updates.at(-1).status, /not an offered target and size/);
+});
+
+test("worker-calculated unaffordable City and Post skip heavy map scans without suppressing naval choices", async () => {
+  const naval = navalProposal();
+  const s = setup({
+    naval,
+    defense: postProposal(),
+    cityAffordable: false,
+    postAffordable: false,
+    decision: {
+      branch: "boat_attack",
+      kind: "boat",
+      selected: "boat_1_10",
+      candidate_id: naval.candidates[0].id,
+      fraction: 0.1,
+      context: {
+        game_id: "solo-1",
+        snapshot_tick: 100,
+        building_snapshot_id: null,
+        naval_snapshot_id: naval.snapshot_id,
+        plan_version: null,
+      },
+    },
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.equal(
+    s.calls.filter((x) => x.kind === "scan" || x.kind === "post-scan").length,
+    0,
+  );
+  assert.equal(s.calls.filter((x) => x.kind === "naval-scan").length, 1);
+  assert.ok(
+    s.updates.some(
+      (x) => x.cityScan?.reason === "unaffordable_now_worker_cost",
+    ),
+  );
+  assert.ok(
+    s.updates.some(
+      (x) => x.defenseScan?.reason === "unaffordable_now_worker_cost",
+    ),
+  );
+  assert.deepEqual(s.sends, [
+    { kind: "boat", id: naval.candidates[0].id, fraction: 0.1 },
+  ]);
+});
+
+test("cheap no-owned-shore preflight skips full naval scan, then checks coast within five seconds", async () => {
+  let shoreline = false;
+  const naval = navalProposal();
+  const s = setup({
+    naval,
+    cityAffordable: false,
+    hasOwnedShore: () => shoreline,
+    decideHybrid: () => ({
+      branch: "boat_attack",
+      kind: "boat",
+      selected: "boat_1_10",
+      candidate_id: naval.candidates[0].id,
+      fraction: 0.1,
+      context: {
+        game_id: "solo-1",
+        snapshot_tick: 101,
+        building_snapshot_id: null,
+        naval_snapshot_id: naval.snapshot_id,
+        plan_version: null,
+      },
+    }),
+  });
+  s.controller.start({ limit: 2 });
+  await setImmediate();
+  assert.equal(s.calls.filter((x) => x.kind === "naval-scan").length, 0);
+  assert.equal(s.controller.nextNavalScanAt, 5000);
+  assert.ok(s.updates.some((x) => x.navalScan?.reason === "no_owned_shore"));
+  shoreline = true;
+  s.setTime(5000);
+  s.status.tick = 101;
+  s.timers.shift()();
+  await setImmediate();
+  assert.equal(s.calls.filter((x) => x.kind === "naval-scan").length, 1);
+  assert.deepEqual(s.sends, [
+    { kind: "boat", id: naval.candidates[0].id, fraction: 0.1 },
+  ]);
+});
+
+test("City affordability is checked anew on later bounded scans", async () => {
+  let goldEnough = false;
+  const s = setup({
+    cityAffordable: () => goldEnough,
+    decision: {
+      branch: "city_build",
+      kind: "city",
+      selected: "build_city_1",
+      candidate_id: "solo-1/map@100#1:c1",
+      context: {
+        game_id: "solo-1",
+        snapshot_tick: 101,
+        building_snapshot_id: "solo-1/map@100#1",
+        plan_version: null,
+      },
+    },
+  });
+  s.land.border.wilderness_edges = 0;
+  s.land.border.player_edges = 0;
+  s.land.border.water_edges += 16;
+  s.land.neighbors = [];
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.equal(s.calls.filter((x) => x.kind === "scan").length, 0);
+  s.setTime(5000);
+  s.status.tick = 101;
+  goldEnough = true;
+  s.timers.shift()();
+  await setImmediate();
+  assert.equal(s.calls.filter((x) => x.kind === "scan").length, 1);
+  assert.equal(s.calls.filter((x) => x.kind === "jev").length, 1);
+  assert.deepEqual(s.sends, [{ kind: "city", id: "solo-1/map@100#1:c1" }]);
 });
 
 test("opt-in Defense Post site is acted on only after exact offered Choice and worker permit", async () => {

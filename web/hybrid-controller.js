@@ -26,6 +26,9 @@ export class HybridController extends LandController {
       mapId,
       existingCityTiles,
       cityMechanics,
+      canAffordCity = null,
+      canAffordDefensePost = null,
+      hasOwnedShore = null,
       planClient = null,
       navalAdapter = null,
       defensePostAdapter = null,
@@ -47,6 +50,10 @@ export class HybridController extends LandController {
       typeof mapId !== "function" ||
       typeof existingCityTiles !== "function" ||
       typeof cityMechanics !== "function" ||
+      (canAffordCity !== null && typeof canAffordCity !== "function") ||
+      (canAffordDefensePost !== null &&
+        typeof canAffordDefensePost !== "function") ||
+      (hasOwnedShore !== null && typeof hasOwnedShore !== "function") ||
       (navalAdapter !== null &&
         !["propose", "canExecute", "execute"].every(
           (name) => typeof navalAdapter[name] === "function",
@@ -75,6 +82,9 @@ export class HybridController extends LandController {
     this.mapId = mapId;
     this.existingCityTiles = existingCityTiles;
     this.cityMechanics = cityMechanics;
+    this.canAffordCity = canAffordCity;
+    this.canAffordDefensePost = canAffordDefensePost;
+    this.hasOwnedShore = hasOwnedShore;
     this.cityScanIntervalMs = cityScanIntervalMs;
     this.planClient = planClient;
     this.navalAdapter = navalAdapter;
@@ -83,6 +93,8 @@ export class HybridController extends LandController {
     this.nextDefenseScanAt = 0;
     this.defenseProposal = null;
     this.defenseProposalAt = -Infinity;
+    this.citySkipReason = null;
+    this.defenseSkipReason = null;
     this.navalScanIntervalMs = navalScanIntervalMs;
     this.nextNavalScanAt = 0;
     this.navalProposal = null;
@@ -151,6 +163,8 @@ export class HybridController extends LandController {
     this.nextDefenseScanAt = 0;
     this.defenseProposal = null;
     this.defenseProposalAt = -Infinity;
+    this.citySkipReason = null;
+    this.defenseSkipReason = null;
     this.planAttempted = false;
     this.planFailed = false;
     super.start(settings);
@@ -166,7 +180,19 @@ export class HybridController extends LandController {
     if (this.now() < this.nextCityScanAt) return;
     this.nextCityScanAt = this.now() + this.cityScanIntervalMs;
     this.cityProposal = null;
+    this.citySkipReason = null;
     try {
+      if (this.canAffordCity && !(await this.canAffordCity())) {
+        this.citySkipReason = "not affordable at current worker cost";
+        if (isCurrent())
+          this.onUpdate({
+            status:
+              "City not affordable at current worker-calculated cost; no full-map City scan",
+            cityScan: { offered: 0, reason: "unaffordable_now_worker_cost" },
+          });
+        return;
+      }
+      if (!isCurrent()) return;
       const proposal = await this.buildingAdapter.propose({
         mapId: this.mapId(),
         existingSites: this.existingCityTiles(),
@@ -191,9 +217,10 @@ export class HybridController extends LandController {
         },
       });
     } catch (error) {
+      this.citySkipReason = "scan failed";
       if (isCurrent())
         this.onUpdate({
-          status: `City scan unavailable: ${error.message}; next choice is land-only`,
+          status: `City scan unavailable: ${error.message}; other legal choices remain available`,
           cityScan: { error: error.message },
         });
     }
@@ -204,6 +231,21 @@ export class HybridController extends LandController {
     this.nextNavalScanAt = this.now() + this.navalScanIntervalMs;
     this.navalProposal = null;
     try {
+      if (this.hasOwnedShore && !(await this.hasOwnedShore())) {
+        if (isCurrent()) {
+          this.nextNavalScanAt = Math.min(
+            this.nextNavalScanAt,
+            this.now() + 5000,
+          );
+          this.onUpdate({
+            navalScan: { offered: 0, reason: "no_owned_shore" },
+            status:
+              "No owned shoreline yet; rechecking transport opportunity within 5 seconds",
+          });
+        }
+        return;
+      }
+      if (!isCurrent()) return;
       const proposal = await this.navalAdapter.propose({
         mapId: this.mapId(),
         maxCandidates: 8,
@@ -214,6 +256,11 @@ export class HybridController extends LandController {
       if (!isCurrent()) return;
       this.navalProposal = proposal;
       this.navalProposalAt = this.now();
+      if (!proposal.candidates.length)
+        this.nextNavalScanAt = Math.min(
+          this.nextNavalScanAt,
+          this.now() + 5000,
+        );
       this.onUpdate({
         navalScan: {
           offered: proposal.candidates.length,
@@ -242,7 +289,19 @@ export class HybridController extends LandController {
     if (!this.defensePostAdapter || this.now() < this.nextDefenseScanAt) return;
     this.nextDefenseScanAt = this.now() + this.defenseScanIntervalMs;
     this.defenseProposal = null;
+    this.defenseSkipReason = null;
     try {
+      if (this.canAffordDefensePost && !(await this.canAffordDefensePost())) {
+        this.defenseSkipReason = "not affordable at current worker cost";
+        if (isCurrent())
+          this.onUpdate({
+            status:
+              "Defense Post not affordable at current worker-calculated cost; no full-map Post scan",
+            defenseScan: { offered: 0, reason: "unaffordable_now_worker_cost" },
+          });
+        return;
+      }
+      if (!isCurrent()) return;
       const proposal = await this.defensePostAdapter.propose({
         mapId: this.mapId(),
         maxCandidates: 4,
@@ -266,6 +325,7 @@ export class HybridController extends LandController {
         status: `Defense Posts checked: ${proposal.candidates.length} worker-legal; ${proposal.coverage.omitted_count} omitted`,
       });
     } catch (error) {
+      this.defenseSkipReason = "scan failed";
       if (isCurrent())
         this.onUpdate({
           defenseScan: { error: error.message },
@@ -443,7 +503,7 @@ export class HybridController extends LandController {
           }
         : actionCriteria(landActions);
       const cityStatus = !this.cityProposal
-        ? "not yet scanned or failed"
+        ? (this.citySkipReason ?? "not yet scanned")
         : !city
           ? "scan expired"
           : city.candidates.length
@@ -461,7 +521,7 @@ export class HybridController extends LandController {
       const postStatus = !this.defensePostAdapter
         ? "feature disabled"
         : !this.defenseProposal
-          ? "not yet scanned or failed"
+          ? (this.defenseSkipReason ?? "not yet scanned")
           : !defensePost
             ? "scan expired"
             : defensePost.candidates.length

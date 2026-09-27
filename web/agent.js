@@ -182,6 +182,40 @@ export function mount(connection) {
                 connection.game.config().unitInfo("City")
                   .constructionDuration ?? 0,
             }),
+            canAffordCity: async () => {
+              const me = connection.game.myPlayer();
+              if (!me) return false;
+              const result = await me.buildables(undefined, ["City"]);
+              if (
+                result?.length !== 1 ||
+                result[0].type !== "City" ||
+                typeof result[0].cost !== "bigint"
+              )
+                throw new Error("City worker cost is unavailable");
+              return me.gold() >= result[0].cost;
+            },
+            canAffordDefensePost: async () => {
+              const me = connection.game.myPlayer();
+              if (!me) return false;
+              const result = await me.buildables(undefined, ["Defense Post"]);
+              if (
+                result?.length !== 1 ||
+                result[0].type !== "Defense Post" ||
+                typeof result[0].cost !== "bigint"
+              )
+                throw new Error("Defense Post worker cost is unavailable");
+              return me.gold() >= result[0].cost;
+            },
+            hasOwnedShore: async () => {
+              const me = connection.game.myPlayer();
+              if (!me) return false;
+              const { borderTiles } = await me.borderTiles();
+              return borderTiles.some(
+                (tile) =>
+                  connection.game.ownerID(tile) === me.smallID() &&
+                  connection.game.isShore(tile),
+              );
+            },
             onUpdate,
           },
         )
