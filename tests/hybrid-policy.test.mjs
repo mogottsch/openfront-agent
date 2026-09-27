@@ -151,6 +151,43 @@ function withBoat(type = "wilderness") {
   return o;
 }
 
+function withDefensePost() {
+  const o = withBoat();
+  const snapshot_id = "solo-1/map@109#10";
+  o.defense_post = {
+    snapshot_id, source_tick: 109, current_tick: 109,
+    map_id: "solo-1/map", available_gold: "1000",
+    mechanics: { range_tiles: 30, construction_ticks: 50,
+      coverage_model: "Euclidean radius; geometric front potential only" },
+    posts: { active_completed: 1, under_construction: 1,
+      status_unknown: 0, pending_unconfirmed: 0 },
+    incoming: { observed_attacker_ids: [2],
+      non_retreating_attacker_ids: [2], ids_without_land_contact: [],
+      contact_is_only_potential: true },
+    candidates: [{ id: `${snapshot_id}:dp1`, kind: "build_defense_post",
+      region_id: `${snapshot_id}:r1`, front_id: `${snapshot_id}:f1`,
+      water_ids: [], distance_to_land_border: 1,
+      distance_to_player_border: 1,
+      marginal_owned_territory_tiles: 42,
+      marginal_hostile_front_contacts: 3,
+      marginal_potential_incoming_front_contacts: 2,
+      potential_incoming_contact_ids: [2], cost_gold: "300",
+      gold_after_estimate: "700" }],
+    save_gold: { id: `${snapshot_id}:save_gold`, kind: "save_gold" },
+    coverage: { total_eligible: 1, total_examined: 1,
+      worker_checked: 1, offered_count: 1, omitted_count: 0,
+      uncovered_hostile_front_contacts: 3,
+      uncovered_potential_incoming_front_contacts: 2 },
+    omissions: Object.fromEntries([
+      "not_examined", "geometry_shortlist_limit", "worker_unchecked",
+      "shortlist_limit", "pending_intent", "occupied_post", "not_buildable",
+      "relocated", "upgrade_not_build", "unaffordable",
+      "unaffordable_after_check", "invalid_worker_result", "invalid_gold",
+    ].map((name) => [name, 0])),
+  };
+  return o;
+}
+
 function answer(request, choices) {
   return {
     model: "jev-test",
@@ -356,6 +393,61 @@ test("no unoffered action branch: site and land-only cases", () => {
     "branch",
     "city_site",
   ]);
+});
+
+test("Defense Post adds an independent bounded site Choice with exact snapshot context and no forced build", () => {
+  const input = withDefensePost();
+  const req = buildHybridRequest(input);
+  assert.deepEqual(Object.keys(req.questions), [
+    "branch", "land_action", "city_site", "boat_action", "post_site",
+  ]);
+  assert.deepEqual(Object.keys(req.questions.post_site.criteria), [
+    "save_gold", "build_defense_post_1",
+  ]);
+  assert.ok(req.questions.branch.criteria.defense_post_build);
+  assert.equal(req.state.defense_posts.posts.active_completed, 1);
+  assert.equal(req.state.defense_posts.posts.under_construction, 1);
+  assert.equal(req.state.defense_posts.offered_post_sites[0].marginal_potential_incoming_front_contacts, 2);
+  assert.match(req.questions.post_site.instructions.join(" "), /NOT total casualties or guaranteed survival/);
+  assert.ok(!JSON.stringify(req).includes('"tile":'));
+  assert.ok(!JSON.stringify(req).includes('"attackerID"'));
+  const picks = { branch: "defense_post_build", land_action: "wait",
+    city_site: "save_gold", boat_action: "wait", post_site: "build_defense_post_1" };
+  const choice = parseHybridDecision(answer(req, picks), req);
+  assert.equal(choice.kind, "defense_post");
+  assert.equal(choice.selected, "build_defense_post_1");
+  assert.equal(choice.candidate_id, input.defense_post.candidates[0].id);
+  assert.equal(choice.context.defense_post_snapshot_id, input.defense_post.snapshot_id);
+  assert.equal(choice.context.plan_version, 3);
+  assert.equal(choice.decisions.post_site.action, "build_defense_post_1");
+  assert.equal(parseHybridDecision(answer(req, { ...picks, branch: "wait" }), req).kind, "wait");
+  assert.equal(parseHybridDecision(answer(req, { ...picks, post_site: "save_gold" }), req).kind, "wait");
+  assert.equal(parseHybridDecision(answer(req, { ...picks, branch: "boat_attack" }), req).kind, "wait");
+  const missing = answer(req, picks);
+  delete missing.answers.post_site;
+  assert.throws(() => parseHybridDecision(missing, req));
+  const invented = answer(req, { ...picks, post_site: "build_defense_post_99" });
+  assert.throws(() => parseHybridDecision(invented, req));
+});
+
+test("missing/null Defense Post keeps legacy contract; stale DP alone does not hide City/boat", () => {
+  const legacy = base();
+  assert.equal(Object.hasOwn(validateHybridInput(legacy), "defense_post"), false);
+  assert.deepEqual(Object.keys(buildHybridRequest(legacy).questions), [
+    "branch", "land_action", "city_site",
+  ]);
+  const nil = { ...legacy, defense_post: null };
+  assert.equal(validateHybridInput(nil).defense_post, null);
+  assert.equal(buildHybridRequest(nil).state.defense_posts.status, "not_currently_scanned");
+  const stale = withDefensePost();
+  stale.defense_post.source_tick = 80;
+  assert.throws(() => validateHybridInput(stale));
+  const removed = withDefensePost();
+  removed.defense_post = null;
+  const req = buildHybridRequest(removed);
+  assert.equal(req.questions.post_site, undefined);
+  assert.ok(req.questions.city_site);
+  assert.ok(req.questions.boat_action);
 });
 
 test("rejects unsupported, stale, inconsistent, or ambiguous city choices", () => {

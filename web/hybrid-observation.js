@@ -11,6 +11,11 @@ import {
   navalModelState,
   validateNavalProposal,
 } from "./naval-observation.js";
+import {
+  defensePostChoices,
+  defensePostModelState,
+  validateDefensePostProposal,
+} from "./defense-observation.js";
 
 const integer = (n, max = 10_000_000) =>
   Number.isSafeInteger(n) && n >= 0 && n <= max;
@@ -45,24 +50,9 @@ const omissionKeys = [
 
 export function validateHybridInput(input) {
   if (
-    !(
-      only(input, [
-        "game_id",
-        "snapshot_tick",
-        "land",
-        "building",
-        "city_mechanics",
-        "plan",
-      ]) ||
-      only(input, [
-        "game_id",
-        "snapshot_tick",
-        "land",
-        "building",
-        "city_mechanics",
-        "plan",
-        "naval",
-      ])
+    ![[], ["naval"], ["defense_post"], ["naval", "defense_post"]].some(
+      (extra) => only(input, ["game_id", "snapshot_tick", "land",
+        "building", "city_mechanics", "plan", ...extra]),
     ) ||
     !id(input.game_id) ||
     !integer(input.snapshot_tick) ||
@@ -195,6 +185,10 @@ export function validateHybridInput(input) {
     gameId: input.game_id,
     snapshotTick: input.snapshot_tick,
   });
+  const defense_post = validateDefensePostProposal(input.defense_post ?? null, {
+    gameId: input.game_id,
+    snapshotTick: input.snapshot_tick,
+  });
   const p = input.plan;
   if (
     p !== null &&
@@ -212,7 +206,9 @@ export function validateHybridInput(input) {
       p.objective.length > 240)
   )
     throw new Error("Invalid hybrid plan");
-  return { ...input, land, naval };
+  return { ...input, land, naval,
+    ...(Object.hasOwn(input, "defense_post") ? { defense_post } : {}),
+  };
 }
 
 export function hybridChoices(input) {
@@ -221,7 +217,7 @@ export function hybridChoices(input) {
   const branch = {
     wait: {
       action:
-        "Do not issue a new land attack, transport boat or City construction intent.",
+        "Do not issue a new land attack, transport boat, City or Defense Post construction intent.",
     },
   };
   if (Object.keys(land).length > 1)
@@ -270,7 +266,13 @@ export function hybridChoices(input) {
       action:
         "Consider a worker-checked transport-boat attack to a coastal target, or wait.",
     };
-  return { branch, land, city, boat };
+  const post = defensePostChoices(o.defense_post ?? null);
+  if (Object.keys(post).length > 1)
+    branch.defense_post_build = {
+      action:
+        "Consider one worker-checked Defense Post site or preserve the gold; potential geometric coverage is not guaranteed protection.",
+    };
+  return { branch, land, city, boat, post };
 }
 
 export function hybridModelState(input) {
@@ -300,6 +302,7 @@ export function hybridModelState(input) {
       building_snapshot_id: o.building?.snapshot_id ?? null,
     },
     naval: navalModelState(o.naval),
+    defense_posts: defensePostModelState(o.defense_post ?? null),
     objective:
       o.plan === null
         ? null

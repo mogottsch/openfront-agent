@@ -1,6 +1,6 @@
-// Proposed hybrid Jev decision: three narrow, independent Choice questions in
-// ONE TypeSafe request. Answers are composed only after parsing all questions.
-// No game controller imports this yet; the current land route remains unchanged.
+// Hybrid Jev decision: narrow, independent Choice questions in ONE TypeSafe
+// request. Branch selection determines which independently answered site/size
+// is consumed; no strategy or action is substituted by code.
 import { actionCriteria } from "../web/observation.js";
 import { navalCriteria } from "../web/naval-observation.js";
 import {
@@ -10,7 +10,7 @@ import {
 } from "../web/hybrid-observation.js";
 import { buildRequest as buildLandRequest, parseDecision } from "./policy.mjs";
 
-export const HYBRID_POLICY_VERSION = "hybrid-branch-v2.1-nav-clarity";
+export const HYBRID_POLICY_VERSION = "hybrid-branch-v3-defense-post-proposed";
 
 export function buildHybridRequest(input, model = "jev-latest") {
   const clean = validateHybridInput(input);
@@ -20,9 +20,9 @@ export function buildHybridRequest(input, model = "jev-latest") {
     branch: {
       type: "choice",
       instructions: [
-        "Choose our immediate action family in OpenFront. Decide among waiting, a normal land attack, a geometric coastal transport-boat candidate with a worker-confirmed launch source, and building one City only when offered. Preserve survival and growth while gaining territory and developing our economy; a branch being feasible is not a command to take it.",
-        "The optional objective is a strategic suggestion, not a game rule or legal permission. Use current reserve, existing attacks, pressure, available gold, City costs/capacity benefit and naval fleet/coast facts. An island with no land target cannot expand further without a boat. Worker-confirmed spawn is not guaranteed travel, landing or conquest. Other future moves and unprovided site effects are unknown; candidate omissions are disclosed.",
-        "If choosing a branch, the independently answered land_action, city_site or boat_action Choice names the actual candidate; each can still choose wait/save gold. Never infer that an option was silently filtered because of strategic priority.",
+        "Choose our immediate action family in OpenFront. Decide among waiting, a normal land attack, a geometric coastal transport-boat candidate with a worker-confirmed launch source, building one City, or building one Defense Post only when offered. Preserve survival and growth while gaining territory and developing our economy; a branch being feasible is not a command to take it.",
+        "The optional objective is a strategic suggestion, not a game rule or legal permission. Use current reserve, existing attacks, pressure, available gold, City costs/capacity benefit, Defense Post potential coverage and naval fleet/coast facts. A post's geometric contact coverage is not an observed attack route or guaranteed survival. An island with no land target cannot expand further without a boat. Worker-confirmed spawn is not guaranteed travel, landing or conquest. Other future moves and unprovided site effects are unknown; candidate omissions are disclosed.",
+        "If choosing a branch, the independently answered land_action, city_site, boat_action or post_site Choice names the actual candidate; each can still choose wait/save gold. Never infer that an option was silently filtered because of strategic priority.",
       ],
       criteria: actions.branch,
     },
@@ -56,6 +56,16 @@ export function buildHybridRequest(input, model = "jev-latest") {
       ],
       criteria: navalCriteria(actions.boat),
     };
+  if (actions.branch.defense_post_build)
+    questions.post_site = {
+      type: "choice",
+      instructions: [
+        "Premise: IF we choose defense_post_build, select ONE offered worker-checked Defense Post location or save_gold. This answer is independent of branch; ignore it otherwise.",
+        "A completed, defender-owned Defense Post covers attacked tiles within the engine-configured radius (30 in the measured default configuration; use defense_posts.mechanics.range_tiles here). The measured default construction duration is 50 simulation ticks; use defense_posts.mechanics.construction_ticks here; construction does not protect tiles. For covered tiles the attack formula scales attacker terrain-loss magnitude ×5 and tile-cost/time fraction ×3, NOT total casualties or guaranteed survival. The first Post's engine-calculated cost is 50,000 gold in the measured setup; use the exact current per-site cost instead of assuming it stays fixed.",
+        "Potential hostile/incoming front contacts are geometric border coverage only. An observed attacker ID does not reveal its future route or attack tile. Existing completed Posts, constructing Posts, current gold, time to completion and other offered actions matter. Save the gold when none of the offered sites is worth the commitment; no automatic build under attack.",
+      ],
+      criteria: actions.post,
+    };
   return { model, state: hybridModelState(clean), questions };
 }
 
@@ -87,7 +97,9 @@ export function parseHybridDecision(response, request) {
         ? decisions.city_site.action
         : branch === "boat_attack"
           ? decisions.boat_action.action
-          : "wait";
+          : branch === "defense_post_build"
+            ? decisions.post_site.action
+            : "wait";
   const kind =
     selected === "wait" || selected === "save_gold"
       ? "wait"
@@ -95,15 +107,19 @@ export function parseHybridDecision(response, request) {
         ? "city"
         : branch === "boat_attack"
           ? "boat"
-          : "land";
+          : branch === "defense_post_build"
+            ? "defense_post"
+            : "land";
   const site =
     kind === "city"
       ? request.questions.city_site.criteria[selected]
       : kind === "boat"
         ? request.questions.boat_action.criteria[selected]
-        : null;
+        : kind === "defense_post"
+          ? request.questions.post_site.criteria[selected]
+          : null;
   if (
-    (kind === "city" || kind === "boat") &&
+    (kind === "city" || kind === "boat" || kind === "defense_post") &&
     typeof site?.candidate_id !== "string"
   )
     throw new Error(
@@ -123,6 +139,8 @@ export function parseHybridDecision(response, request) {
       snapshot_tick: request.state.snapshot_tick,
       building_snapshot_id: request.state.economy.building_snapshot_id,
       naval_snapshot_id: request.state.naval.snapshot_id ?? null,
+      ...(request.state.defense_posts.snapshot_id ?
+        { defense_post_snapshot_id: request.state.defense_posts.snapshot_id } : {}),
       plan_version: request.state.objective?.version ?? null,
     },
     decisions,
