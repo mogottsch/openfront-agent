@@ -117,6 +117,93 @@ function answer(request, selected) {
   };
 }
 
+test("decomposed boat questions do not erase an offered Defense Post branch", () => {
+  const raw = input();
+  const snapshot_id = "island/onion@649#3";
+  raw.defense_post = {
+    snapshot_id,
+    source_tick: 649,
+    current_tick: 649,
+    map_id: "island/onion",
+    available_gold: "100000",
+    mechanics: {
+      range_tiles: 30,
+      construction_ticks: 50,
+      coverage_model:
+        "Potential Euclidean front contact, not guaranteed combat protection",
+    },
+    posts: {
+      active_completed: 0,
+      under_construction: 0,
+      status_unknown: 0,
+      pending_unconfirmed: 0,
+    },
+    incoming: {
+      observed_attacker_ids: [],
+      non_retreating_attacker_ids: [],
+      ids_without_land_contact: [],
+      contact_is_only_potential: true,
+    },
+    candidates: [
+      {
+        id: `${snapshot_id}:dp1`,
+        kind: "build_defense_post",
+        region_id: `${snapshot_id}:r1`,
+        front_id: null,
+        water_ids: [],
+        distance_to_land_border: -1,
+        distance_to_player_border: -1,
+        marginal_owned_territory_tiles: 200,
+        marginal_hostile_front_contacts: 0,
+        marginal_potential_incoming_front_contacts: 0,
+        potential_incoming_contact_ids: [],
+        cost_gold: "50000",
+        gold_after_estimate: "50000",
+      },
+    ],
+    save_gold: { id: `${snapshot_id}:save_gold`, kind: "save_gold" },
+    coverage: {
+      total_eligible: 1,
+      total_examined: 1,
+      worker_checked: 1,
+      offered_count: 1,
+      omitted_count: 0,
+      uncovered_hostile_front_contacts: 0,
+      uncovered_potential_incoming_front_contacts: 0,
+    },
+    omissions: {
+      not_examined: 0,
+      geometry_shortlist_limit: 0,
+      worker_unchecked: 0,
+      shortlist_limit: 0,
+      pending_intent: 0,
+      occupied_post: 0,
+      not_buildable: 0,
+      relocated: 0,
+      upgrade_not_build: 0,
+      unaffordable: 0,
+      unaffordable_after_check: 0,
+      invalid_worker_result: 0,
+      invalid_gold: 0,
+    },
+  };
+  const req = buildNavalDecomposedRequest(raw);
+  assert.ok(req.questions.branch.criteria.defense_post_build);
+  assert.ok(req.questions.post_site.criteria.build_defense_post_1);
+  const picks = {
+    branch: "defense_post_build",
+    post_site: "build_defense_post_1",
+  };
+  const chosen = parseNavalDecomposedDecision(answer(req, picks), req);
+  assert.equal(chosen.kind, "defense_post");
+  assert.equal(chosen.candidate_id, raw.defense_post.candidates[0].id);
+  assert.equal(chosen.context.defense_post_snapshot_id, snapshot_id);
+  picks.post_site = "save_gold";
+  const skipped = parseNavalDecomposedDecision(answer(req, picks), req);
+  assert.equal(skipped.kind, "wait");
+  assert.equal(skipped.candidate_id, null);
+});
+
 test("one request decomposes branch, target and target-specific size without replacing Jev wait", () => {
   const raw = input();
   const req = buildNavalDecomposedRequest(raw);

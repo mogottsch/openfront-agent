@@ -119,6 +119,77 @@ function navalProposal() {
   };
 }
 
+function postProposal() {
+  const snapshot_id = "solo-1/map@100#4";
+  return {
+    snapshot_id,
+    source_tick: 100,
+    current_tick: 100,
+    map_id: "solo-1/map",
+    available_gold: "100000",
+    mechanics: {
+      range_tiles: 30,
+      construction_ticks: 50,
+      coverage_model:
+        "Geometric potential owned/front contact radius, not guaranteed protection",
+    },
+    posts: {
+      active_completed: 0,
+      under_construction: 0,
+      status_unknown: 0,
+      pending_unconfirmed: 0,
+    },
+    incoming: {
+      observed_attacker_ids: [2],
+      non_retreating_attacker_ids: [2],
+      ids_without_land_contact: [],
+      contact_is_only_potential: true,
+    },
+    candidates: [
+      {
+        id: `${snapshot_id}:dp1`,
+        kind: "build_defense_post",
+        region_id: `${snapshot_id}:r1`,
+        front_id: `${snapshot_id}:f1`,
+        water_ids: [],
+        distance_to_land_border: 1,
+        distance_to_player_border: 1,
+        marginal_owned_territory_tiles: 20,
+        marginal_hostile_front_contacts: 3,
+        marginal_potential_incoming_front_contacts: 2,
+        potential_incoming_contact_ids: [2],
+        cost_gold: "50000",
+        gold_after_estimate: "50000",
+      },
+    ],
+    save_gold: { id: `${snapshot_id}:save_gold`, kind: "save_gold" },
+    coverage: {
+      total_eligible: 1,
+      total_examined: 1,
+      worker_checked: 1,
+      offered_count: 1,
+      omitted_count: 0,
+      uncovered_hostile_front_contacts: 4,
+      uncovered_potential_incoming_front_contacts: 2,
+    },
+    omissions: {
+      not_examined: 0,
+      geometry_shortlist_limit: 0,
+      worker_unchecked: 0,
+      shortlist_limit: 0,
+      pending_intent: 0,
+      occupied_post: 0,
+      not_buildable: 0,
+      relocated: 0,
+      upgrade_not_build: 0,
+      unaffordable: 0,
+      unaffordable_after_check: 0,
+      invalid_worker_result: 0,
+      invalid_gold: 0,
+    },
+  };
+}
+
 function setup({
   decision,
   decideHybrid,
@@ -127,6 +198,8 @@ function setup({
   planClient,
   naval,
   navalPropose,
+  defense,
+  defensePropose,
 } = {}) {
   let time = 0;
   const status = { ready: true, ended: false, tick: 100 };
@@ -178,6 +251,24 @@ function setup({
         },
       }
     : null;
+  const postAdapter = defense
+    ? {
+        propose: async (opts) => {
+          calls.push({ kind: "post-scan", opts });
+          return defensePropose ? defensePropose(opts) : defense;
+        },
+        canExecute: async (id) => {
+          calls.push({ kind: "post-legal", id });
+          return true;
+        },
+        execute: async (id, isCurrent) => {
+          calls.push({ kind: "post-send", id });
+          if (!isCurrent()) return false;
+          sends.push({ kind: "defense_post", id });
+          return true;
+        },
+      }
+    : null;
   const controller = new HybridController(adapter, builder, {
     gameId: () => "solo-1",
     mapId: () => "map",
@@ -188,6 +279,7 @@ function setup({
     }),
     planClient: planClient ?? null,
     navalAdapter: navy,
+    defensePostAdapter: postAdapter,
     decideLand: async () => ({ action: "wait", confidence: 1 }),
     decideHybridDecomposed: decideHybridDecomposed
       ? async (input, signal) => {
@@ -303,6 +395,108 @@ test("invented boat size cannot bypass the offered Choice", async () => {
   await setImmediate();
   assert.deepEqual(s.sends, []);
   assert.match(s.updates.at(-1).status, /not an offered target and size/);
+});
+
+test("opt-in Defense Post site is acted on only after exact offered Choice and worker permit", async () => {
+  const defense = postProposal();
+  const s = setup({
+    defense,
+    decision: {
+      branch: "defense_post_build",
+      kind: "defense_post",
+      selected: "build_defense_post_1",
+      candidate_id: defense.candidates[0].id,
+      context: {
+        game_id: "solo-1",
+        snapshot_tick: 100,
+        building_snapshot_id: "solo-1/map@100#1",
+        defense_post_snapshot_id: defense.snapshot_id,
+        plan_version: null,
+      },
+    },
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.deepEqual(s.sends, [
+    { kind: "defense_post", id: defense.candidates[0].id },
+  ]);
+  assert.equal(s.calls.filter((x) => x.kind === "post-scan").length, 1);
+  assert.deepEqual(
+    s.calls.slice(-2).map((x) => x.kind),
+    ["post-legal", "post-send"],
+  );
+  assert.equal(
+    s.updates.find((x) => x.decision).decision.outcome,
+    "Defense Post build intent sent",
+  );
+});
+
+test("Defense Post save_gold is no-op even when another speculative branch chooses an attack", async () => {
+  const defense = postProposal();
+  const s = setup({
+    defense,
+    decision: {
+      branch: "defense_post_build",
+      kind: "wait",
+      selected: "save_gold",
+      candidate_id: null,
+      context: {
+        game_id: "solo-1",
+        snapshot_tick: 100,
+        building_snapshot_id: "solo-1/map@100#1",
+        defense_post_snapshot_id: defense.snapshot_id,
+        plan_version: null,
+      },
+    },
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.deepEqual(s.sends, []);
+  assert.equal(s.calls.filter((x) => x.kind === "post-legal").length, 0);
+});
+
+test("stale or forged Defense Post site cannot be mapped to a current tile", async () => {
+  const defense = postProposal();
+  for (const candidate_id of ["forged:dp1", defense.candidates[0].id]) {
+    const s = setup({
+      defense,
+      decision: {
+        branch: "defense_post_build",
+        kind: "defense_post",
+        selected: "build_defense_post_1",
+        candidate_id,
+        context: {
+          game_id: "solo-1",
+          snapshot_tick: 100,
+          building_snapshot_id: "solo-1/map@100#1",
+          defense_post_snapshot_id:
+            candidate_id === "forged:dp1"
+              ? defense.snapshot_id
+              : "stale:snapshot",
+          plan_version: null,
+        },
+      },
+    });
+    s.controller.start({ limit: 1 });
+    await setImmediate();
+    assert.deepEqual(s.sends, []);
+    assert.equal(s.calls.filter((x) => x.kind === "post-send").length, 0);
+  }
+});
+
+test("Defense Post scan failure cannot conceal a still-valid City action", async () => {
+  const s = setup({
+    defense: postProposal(),
+    defensePropose: () => {
+      throw new Error("post worker failed");
+    },
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.deepEqual(s.sends, [{ kind: "city", id: "solo-1/map@100#1:c1" }]);
+  assert.ok(
+    s.updates.some((x) => x.status?.includes("Defense Post scan unavailable")),
+  );
 });
 
 test("opt-in target/size route consumes Jev's chosen boat without replacing the flat policy", async () => {

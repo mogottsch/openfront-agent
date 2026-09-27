@@ -118,6 +118,15 @@ export function parseNavalDecomposedDecision(response, request) {
       if (typeof candidate_id !== "string")
         throw new Error("City candidate lost its registry ID");
     }
+  } else if (branch === "defense_post_build") {
+    selected = decisions.post_site.action;
+    if (selected !== "save_gold") {
+      kind = "defense_post";
+      candidate_id =
+        request.questions.post_site.criteria[selected]?.candidate_id;
+      if (typeof candidate_id !== "string")
+        throw new Error("Defense Post candidate lost its registry ID");
+    }
   } else if (branch === "boat_attack") {
     const targetKey = decisions.boat_target.action;
     if (targetKey !== "wait") {
@@ -153,6 +162,9 @@ export function parseNavalDecomposedDecision(response, request) {
       snapshot_tick: request.state.snapshot_tick,
       building_snapshot_id: request.state.economy.building_snapshot_id,
       naval_snapshot_id: request.state.naval.snapshot_id ?? null,
+      ...(request.state.defense_posts?.snapshot_id
+        ? { defense_post_snapshot_id: request.state.defense_posts.snapshot_id }
+        : {}),
       plan_version: request.state.objective?.version ?? null,
     },
     decisions,

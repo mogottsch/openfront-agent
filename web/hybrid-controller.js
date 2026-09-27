@@ -28,8 +28,10 @@ export class HybridController extends LandController {
       cityMechanics,
       planClient = null,
       navalAdapter = null,
+      defensePostAdapter = null,
       cityScanIntervalMs = 15000,
       navalScanIntervalMs = 15000,
+      defenseScanIntervalMs = 15000,
       onUpdate = () => {},
       ...clock
     },
@@ -49,6 +51,10 @@ export class HybridController extends LandController {
         !["propose", "canExecute", "execute"].every(
           (name) => typeof navalAdapter[name] === "function",
         )) ||
+      (defensePostAdapter !== null &&
+        !["propose", "canExecute", "execute"].every(
+          (name) => typeof defensePostAdapter[name] === "function",
+        )) ||
       (planClient !== null &&
         !["plan", "heartbeat", "getPlan", "stop"].every(
           (name) => typeof planClient[name] === "function",
@@ -56,7 +62,9 @@ export class HybridController extends LandController {
       !Number.isInteger(cityScanIntervalMs) ||
       cityScanIntervalMs < 5000 ||
       !Number.isInteger(navalScanIntervalMs) ||
-      navalScanIntervalMs < 5000
+      navalScanIntervalMs < 5000 ||
+      !Number.isInteger(defenseScanIntervalMs) ||
+      defenseScanIntervalMs < 5000
     ) {
       throw new Error("Invalid hybrid controller dependencies");
     }
@@ -70,6 +78,11 @@ export class HybridController extends LandController {
     this.cityScanIntervalMs = cityScanIntervalMs;
     this.planClient = planClient;
     this.navalAdapter = navalAdapter;
+    this.defensePostAdapter = defensePostAdapter;
+    this.defenseScanIntervalMs = defenseScanIntervalMs;
+    this.nextDefenseScanAt = 0;
+    this.defenseProposal = null;
+    this.defenseProposalAt = -Infinity;
     this.navalScanIntervalMs = navalScanIntervalMs;
     this.nextNavalScanAt = 0;
     this.navalProposal = null;
@@ -80,6 +93,20 @@ export class HybridController extends LandController {
     this.nextCityScanAt = 0;
     this.cityProposal = null;
     this.cityProposalAt = -Infinity;
+  }
+
+  setDefensePostAdapter(adapter) {
+    if (
+      this.running ||
+      !adapter ||
+      !["propose", "canExecute", "execute"].every(
+        (name) => typeof adapter[name] === "function",
+      )
+    )
+      throw new Error(
+        "Cannot change Defense Post adapter during an active run",
+      );
+    this.defensePostAdapter = adapter;
   }
 
   setDecomposedNavalDecider(decide) {
@@ -121,6 +148,9 @@ export class HybridController extends LandController {
     this.nextNavalScanAt = 0;
     this.navalProposal = null;
     this.navalProposalAt = -Infinity;
+    this.nextDefenseScanAt = 0;
+    this.defenseProposal = null;
+    this.defenseProposalAt = -Infinity;
     this.planAttempted = false;
     this.planFailed = false;
     super.start(settings);
@@ -208,6 +238,42 @@ export class HybridController extends LandController {
     }
   }
 
+  async scanDefensePosts(isCurrent) {
+    if (!this.defensePostAdapter || this.now() < this.nextDefenseScanAt) return;
+    this.nextDefenseScanAt = this.now() + this.defenseScanIntervalMs;
+    this.defenseProposal = null;
+    try {
+      const proposal = await this.defensePostAdapter.propose({
+        mapId: this.mapId(),
+        maxCandidates: 4,
+        maxExamined: 512,
+        maxWorkerChecks: 12,
+      });
+      if (!isCurrent()) return;
+      this.defenseProposal = proposal;
+      this.defenseProposalAt = this.now();
+      this.onUpdate({
+        defenseScan: {
+          offered: proposal.candidates.length,
+          available_gold: proposal.available_gold,
+          posts: proposal.posts,
+          incoming: proposal.incoming,
+          mechanics: proposal.mechanics,
+          worker_checked: proposal.coverage.worker_checked,
+          omitted: proposal.coverage.omitted_count,
+          reasons: proposal.omissions,
+        },
+        status: `Defense Posts checked: ${proposal.candidates.length} worker-legal; ${proposal.coverage.omitted_count} omitted`,
+      });
+    } catch (error) {
+      if (isCurrent())
+        this.onUpdate({
+          defenseScan: { error: error.message },
+          status: `Defense Post scan unavailable: ${error.message}; no post option this turn`,
+        });
+    }
+  }
+
   async step() {
     if (!this.running || this.busy) return;
     if (this.now() < this.nextAllowedStart) {
@@ -231,6 +297,8 @@ export class HybridController extends LandController {
       await this.scanCitySites(isCurrent);
       if (!isCurrent()) return;
       await this.scanNavalSites(isCurrent);
+      if (!isCurrent()) return;
+      await this.scanDefensePosts(isCurrent);
       if (!isCurrent()) return;
       const observedAt = this.now();
       const snapshot = await this.adapter.observe();
@@ -289,12 +357,13 @@ export class HybridController extends LandController {
       }
       // Proposals are independently optional. A failed/expired City scan must
       // not hide a genuinely worker-checked coastal option, and vice versa.
-      const compose = (building, naval) => ({
+      const compose = (building, naval, defensePost) => ({
         game_id: this.gameId(),
         snapshot_tick: snapshot.tick,
         land,
         building,
         naval,
+        ...(this.defensePostAdapter ? { defense_post: defensePost } : {}),
         city_mechanics: this.cityMechanics(),
         plan: null,
       });
@@ -312,9 +381,16 @@ export class HybridController extends LandController {
         snapshot.tick >= this.navalProposal.current_tick
           ? this.navalProposal
           : null;
+      let defensePost =
+        this.defenseProposal &&
+        this.now() - this.defenseProposalAt <= 1500 &&
+        snapshot.tick - this.defenseProposal.source_tick <= 20 &&
+        snapshot.tick >= this.defenseProposal.current_tick
+          ? this.defenseProposal
+          : null;
       if (city)
         try {
-          validateHybridInput(compose(city, null));
+          validateHybridInput(compose(city, null, null));
         } catch (error) {
           city = null;
           this.onUpdate({
@@ -323,17 +399,31 @@ export class HybridController extends LandController {
         }
       if (naval)
         try {
-          validateHybridInput(compose(null, naval));
+          validateHybridInput(compose(null, naval, null));
         } catch (error) {
           naval = null;
           this.onUpdate({
             status: `Discarded invalid naval scan: ${error.message}`,
           });
         }
+      if (defensePost)
+        try {
+          validateHybridInput(compose(null, null, defensePost));
+        } catch (error) {
+          defensePost = null;
+          this.onUpdate({
+            status: `Discarded invalid Defense Post scan: ${error.message}`,
+          });
+        }
       const input =
-        city || naval ? validateHybridInput(compose(city, naval)) : null;
+        city || naval || defensePost
+          ? validateHybridInput(compose(city, naval, defensePost))
+          : null;
       const hybrid = Boolean(
-        input && (city?.candidates.length || naval?.candidates.length),
+        input &&
+        (city?.candidates.length ||
+          naval?.candidates.length ||
+          defensePost?.candidates.length),
       );
       const offered = hybrid ? hybridChoices(input) : null;
       const state = hybrid ? hybridModelState(input) : modelState(land);
@@ -346,6 +436,9 @@ export class HybridController extends LandController {
             ...(offered.branch.city_build ? { city_site: offered.city } : {}),
             ...(offered.branch.boat_attack
               ? { boat_action: offered.boat }
+              : {}),
+            ...(offered.branch.defense_post_build
+              ? { post_site: offered.post }
               : {}),
           }
         : actionCriteria(landActions);
@@ -365,12 +458,21 @@ export class HybridController extends LandController {
             : naval.candidates.length
               ? "sites offered"
               : "zero worker-legal sites";
+      const postStatus = !this.defensePostAdapter
+        ? "feature disabled"
+        : !this.defenseProposal
+          ? "not yet scanned or failed"
+          : !defensePost
+            ? "scan expired"
+            : defensePost.candidates.length
+              ? "sites offered"
+              : "zero worker-legal sites";
       this.onUpdate({
         state,
         actions: criteria,
         mode: hybrid
-          ? `land + ${city?.candidates.length ?? 0} City + ${naval?.candidates.length ?? 0} boat opportunities`
-          : `land only (City: ${cityStatus}; navy: ${navalStatus})`,
+          ? `land + ${city?.candidates.length ?? 0} City + ${naval?.candidates.length ?? 0} boat + ${defensePost?.candidates.length ?? 0} Post opportunities`
+          : `land only (City: ${cityStatus}; navy: ${navalStatus}; posts: ${postStatus})`,
       });
       if (Object.keys(landActions).length === 1 && !hybrid) {
         // A stranded island must not stay blind for most of a 15s window.
@@ -379,6 +481,8 @@ export class HybridController extends LandController {
         this.nextCityScanAt = Math.min(this.nextCityScanAt, due);
         if (this.navalAdapter)
           this.nextNavalScanAt = Math.min(this.nextNavalScanAt, due);
+        if (this.defensePostAdapter)
+          this.nextDefenseScanAt = Math.min(this.nextDefenseScanAt, due);
         this.onUpdate({
           status:
             "Waiting for legal actions; next worker scans within 5 seconds",
@@ -419,12 +523,15 @@ export class HybridController extends LandController {
           land_attack: ["land", "wait"],
           city_build: ["city", "wait"],
           boat_attack: ["boat", "wait"],
+          defense_post_build: ["defense_post", "wait"],
         };
         if (
           !branchKinds[decision.branch]?.includes(decision.kind) ||
           (decision.kind === "wait" &&
             decision.selected !==
-              (decision.branch === "city_build" ? "save_gold" : "wait"))
+              (["city_build", "defense_post_build"].includes(decision.branch)
+                ? "save_gold"
+                : "wait"))
         )
           throw new Error("Model branch and selected action kind disagree");
         const expectedContext = {
@@ -433,6 +540,9 @@ export class HybridController extends LandController {
           building_snapshot_id: input.building?.snapshot_id ?? null,
           ...(input.naval?.candidates.length
             ? { naval_snapshot_id: input.naval.snapshot_id }
+            : {}),
+          ...(input.defense_post?.snapshot_id
+            ? { defense_post_snapshot_id: input.defense_post.snapshot_id }
             : {}),
           plan_version: activePlan?.plan_version ?? null,
         };
@@ -466,6 +576,33 @@ export class HybridController extends LandController {
             ))
               ? "City build intent sent"
               : "City intent not sent";
+        } else if (decision.kind === "defense_post") {
+          const site = offered.post[decision.selected];
+          if (
+            !site ||
+            !site.candidate_id ||
+            site.candidate_id !== decision.candidate_id ||
+            !this.defensePostAdapter
+          )
+            throw new Error(
+              "Model Defense Post choice was not an offered site",
+            );
+          chosen = site;
+          const legal = await this.defensePostAdapter.canExecute(
+            site.candidate_id,
+          );
+          if (!isCurrent()) return;
+          if (!this.fresh(snapshot.tick, observedAt))
+            outcome = "discarded: Defense Post snapshot changed";
+          else if (!legal)
+            outcome = "discarded: Defense Post no longer buildable";
+          else
+            outcome = (await this.defensePostAdapter.execute(
+              site.candidate_id,
+              isCurrent,
+            ))
+              ? "Defense Post build intent sent"
+              : "Defense Post intent not sent";
         } else if (decision.kind === "boat") {
           const site = offered.boat[decision.selected];
           if (
