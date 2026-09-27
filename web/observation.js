@@ -7,7 +7,7 @@ export const TRIBE_ATTACK_FRACTIONS = Object.freeze([0.1, 0.2]);
 export const fractionsForTarget = (type) =>
   type === "tribe" ? TRIBE_ATTACK_FRACTIONS : ATTACK_FRACTIONS;
 export const OBSERVATION_ERROR =
-  "Invalid land observation (self, border, neighbors, incoming_attacks, outgoing_attacks)";
+  "Invalid land observation (self, border, neighbors, incoming_attacks, outgoing_attacks, optional tribe_focus)";
 const TYPES = ["human", "nation", "tribe"];
 const fail = () => {
   throw new Error(OBSERVATION_ERROR);
@@ -33,15 +33,31 @@ const playerStats = (p) => {
 };
 
 export function validateObservation(value) {
-  exact(value, [
+  const baseKeys = [
     "self",
     "border",
     "neighbors",
     "incoming_attacks",
     "outgoing_attacks",
-  ]);
-  exact(value.self, ["id", "troops", "troop_capacity", "territory_tiles"]);
+  ];
+  exact(
+    value,
+    Object.hasOwn(value ?? {}, "tribe_focus")
+      ? [...baseKeys, "tribe_focus"]
+      : baseKeys,
+  );
+  const ownKeys = ["id", "troops", "troop_capacity", "territory_tiles"];
+  exact(
+    value.self,
+    Object.hasOwn(value.self ?? {}, "gold") ? [...ownKeys, "gold"] : ownKeys,
+  );
   playerStats(value.self);
+  if (
+    Object.hasOwn(value.self, "gold") &&
+    (typeof value.self.gold !== "string" ||
+      !/^(0|[1-9]\d{0,39})$/.test(value.self.gold))
+  )
+    fail();
   const edgeKeys = [
     "total_edges",
     "wilderness_edges",
@@ -143,6 +159,42 @@ export function validateObservation(value) {
     return { ...n, incoming_attacks: attackList(n.incoming_attacks, n.id) };
   });
   if (sharedEdges !== value.border.player_edges) fail();
+  let focus;
+  if (Object.hasOwn(value, "tribe_focus")) {
+    focus = value.tribe_focus;
+    if (focus !== null) {
+      exact(focus, [
+        "id",
+        "alive",
+        "type",
+        "troops",
+        "territory_tiles",
+        "adjacent",
+        "can_attack",
+      ]);
+      integer(focus.id, 1, 4095);
+      integer(focus.troops);
+      integer(focus.territory_tiles);
+      if (
+        focus.id === value.self.id ||
+        focus.alive !== true ||
+        focus.type !== "tribe" ||
+        typeof focus.adjacent !== "boolean" ||
+        typeof focus.can_attack !== "boolean" ||
+        (focus.territory_tiles === 0 && focus.can_attack) ||
+        (focus.can_attack && !focus.adjacent)
+      )
+        fail();
+      const neighbor = neighbors.find((n) => n.id === focus.id);
+      if (
+        Boolean(neighbor) !== focus.adjacent ||
+        (neighbor &&
+          (neighbor.type !== "tribe" ||
+            (focus.can_attack && !neighbor.can_attack)))
+      )
+        fail();
+    }
+  }
   // The same player's reserve must not vary between attack records or disagree
   // with its simultaneous player snapshot. Reserve is counted once per attacker.
   for (const p of [{ ...value.self, type: "human" }, ...neighbors]) {
@@ -156,6 +208,7 @@ export function validateObservation(value) {
     neighbors,
     incoming_attacks: incoming,
     outgoing_attacks: outgoing,
+    ...(Object.hasOwn(value, "tribe_focus") ? { tribe_focus: focus } : {}),
   };
 }
 
@@ -182,6 +235,75 @@ export function groupAttackers(attacks) {
     groups.set(a.attacker_id, group);
   }
   return [...groups.values()].sort((a, b) => a.id - b.id);
+}
+
+// Moritz's reviewed early-game PRIORITY GATE, separate from engine legality.
+// Disclose every strategically withheld legal target; Jev still selects an
+// offered action, and code never replaces its answer after inference.
+function priorityGate(o) {
+  const borderingTribes = o.neighbors.filter(
+    (n) =>
+      n.type === "tribe" &&
+      n.relationship === "unallied" &&
+      n.territory_tiles > 0,
+  );
+  const activeTargets = new Set(
+    o.outgoing_attacks
+      .filter((a) => active(a))
+      .map((a) => a.target_id)
+      .filter((id) => borderingTribes.some((n) => n.id === id)),
+  );
+  const focus = o.tribe_focus;
+  const mode = focus
+    ? "finish_focused_tribe"
+    : activeTargets.size
+      ? "finish_current_tribe_attacks"
+      : borderingTribes.length
+        ? "bordering_tribes_before_nations"
+        : "no_bordering_tribes";
+  const blocked = [];
+  const candidateAllowed = (targetId, type) => {
+    let reason = null;
+    if (focus) {
+      if (targetId === null) {
+        if (focus.adjacent)
+          reason = "finish_focused_tribe_before_new_wilderness";
+        // If we lost the only border to a still-alive focused tribe, wilderness
+        // is a documented reconnection exception, not permission for nations.
+      } else if (targetId !== focus.id)
+        reason = "finish_focused_tribe_before_new_target";
+      else if (!focus.can_attack)
+        reason = "focused_tribe_not_currently_attackable";
+    } else if (activeTargets.size) {
+      if (targetId === null)
+        reason = "finish_current_tribe_attacks_before_wilderness";
+      else if (!activeTargets.has(targetId))
+        reason = "finish_current_tribe_attacks_before_new_target";
+    } else if (type === "nation" && borderingTribes.length)
+      reason = "conquer_bordering_tribes_before_nations";
+    if (reason)
+      blocked.push({ target_id: targetId, target_type: type, reason });
+    return reason === null;
+  };
+  return {
+    mode,
+    focus_tribe_id: focus?.id ?? null,
+    active_tribe_target_ids: [...activeTargets].sort((a, b) => a - b),
+    bordering_tribe_ids: borderingTribes.map((n) => n.id).sort((a, b) => a - b),
+    blocked_targets: blocked,
+    candidateAllowed,
+  };
+}
+export function landStrategy(observation) {
+  const gate = priorityGate(validateObservation(observation));
+  const { candidateAllowed, ...publicState } = gate;
+  // Only list targets that were really attackable before the strategy gate.
+  if (observation.border.wilderness_edges > 0)
+    candidateAllowed(null, "wilderness");
+  for (const n of observation.neighbors)
+    if (n.can_attack && n.relationship === "unallied")
+      candidateAllowed(n.id, n.type);
+  return publicState;
 }
 
 export function modelState(observation) {
@@ -243,11 +365,27 @@ export function modelState(observation) {
     }),
     incoming_attacks: o.incoming_attacks,
     outgoing_attacks: o.outgoing_attacks,
+    tribe_focus: o.tribe_focus
+      ? {
+          ...o.tribe_focus,
+          our_active_attack_troops: sum(
+            o.outgoing_attacks.filter(
+              (a) => active(a) && a.target_id === o.tribe_focus.id,
+            ),
+          ),
+          our_reserve_to_defender_reserve_ratio: ratio(
+            o.self.troops,
+            o.tribe_focus.troops,
+          ),
+        }
+      : null,
+    strategy: landStrategy(o),
   };
 }
 
 export function buildActions(observation) {
   const o = validateObservation(observation);
+  const gate = priorityGate(o);
   const actions = {
     wait: {
       kind: "wait",
@@ -279,9 +417,17 @@ export function buildActions(observation) {
       };
     }
   };
-  if (o.border.wilderness_edges > 0) addTarget(null, "wilderness", null);
+  if (
+    o.border.wilderness_edges > 0 &&
+    gate.candidateAllowed(null, "wilderness")
+  )
+    addTarget(null, "wilderness", null);
   for (const n of [...o.neighbors].sort((a, b) => a.id - b.id))
-    if (n.can_attack && n.relationship === "unallied")
+    if (
+      n.can_attack &&
+      n.relationship === "unallied" &&
+      gate.candidateAllowed(n.id, n.type)
+    )
       addTarget(n.id, `player_${n.id}`, n.troops, n.type);
   if (Object.keys(actions).length > MAX_ACTIONS)
     throw new Error(

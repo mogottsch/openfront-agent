@@ -112,6 +112,8 @@ export function mount(connection) {
         city_mechanics,
         naval,
         defense_posts,
+        strategy,
+        tribe_focus,
       } = event.state;
       $("state").textContent =
         `Troops ${self.troops}/${self.troop_capacity} (${self.reserve_percent}%)\nBorder: ${Math.round(border.wilderness_share * 100)}% wilderness, ${Math.round(border.player_share * 100)}% players\nNeighbors: ${neighbors.length} · incoming: ${self.active_incoming_troops}\nAlready committed: ${self.committed_outgoing_troops}` +
@@ -123,6 +125,12 @@ export function mount(connection) {
           : "") +
         (defense_posts?.offered_sites
           ? `\nDefense Posts: ${defense_posts.posts.active_completed} complete, ${defense_posts.posts.under_construction} building · ${defense_posts.offered_sites} sites; ${defense_posts.omitted_sites} omitted`
+          : "") +
+        (strategy
+          ? `\nTribe priority: ${strategy.mode}${tribe_focus ? ` · focused ${tribe_focus.id} alive` : ""} · ${strategy.blocked_targets.length} land targets withheld`
+          : "") +
+        (naval?.strategically_withheld_destinations?.length
+          ? ` · ${naval.strategically_withheld_destinations.length} naval coasts withheld`
           : "");
       $("payload").textContent = JSON.stringify(
         { state: event.state, actions: event.actions },

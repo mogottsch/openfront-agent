@@ -51,8 +51,16 @@ const omissionKeys = [
 export function validateHybridInput(input) {
   if (
     ![[], ["naval"], ["defense_post"], ["naval", "defense_post"]].some(
-      (extra) => only(input, ["game_id", "snapshot_tick", "land",
-        "building", "city_mechanics", "plan", ...extra]),
+      (extra) =>
+        only(input, [
+          "game_id",
+          "snapshot_tick",
+          "land",
+          "building",
+          "city_mechanics",
+          "plan",
+          ...extra,
+        ]),
     ) ||
     !id(input.game_id) ||
     !integer(input.snapshot_tick) ||
@@ -206,7 +214,10 @@ export function validateHybridInput(input) {
       p.objective.length > 240)
   )
     throw new Error("Invalid hybrid plan");
-  return { ...input, land, naval,
+  return {
+    ...input,
+    land,
+    naval,
     ...(Object.hasOwn(input, "defense_post") ? { defense_post } : {}),
   };
 }
@@ -301,7 +312,7 @@ export function hybridModelState(input) {
       // Choice cannot see the independent site Choice criteria/answer.
       building_snapshot_id: o.building?.snapshot_id ?? null,
     },
-    naval: navalModelState(o.naval),
+    naval: navalModelState(o.naval, o.land),
     defense_posts: defensePostModelState(o.defense_post ?? null),
     objective:
       o.plan === null

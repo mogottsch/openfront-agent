@@ -59,10 +59,25 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
     /Wilderness normally comes before untouched tribes, but available wilderness is NOT an instruction to attack every decision/,
   );
   assert.match(text, /other humans or nations/i);
-  assert.match(text, /finish that tribe before starting another tribe, wilderness or nation attack/i);
-  assert.match(text, /Take all attackable bordering tribes before attacking any nation/i);
+  assert.match(
+    text,
+    /finish that target before starting another tribe, wilderness or player attack/i,
+  );
+  assert.match(text, /engine-legal targets strategically withheld/i);
+  assert.match(text, /retain it until authoritative death confirmation/i);
+  assert.match(
+    text,
+    /Every returned offered Choice is still freshly revalidated and executed if legal/i,
+  );
+  assert.match(
+    text,
+    /Take all attackable bordering tribes before attacking any nation/i,
+  );
   assert.match(text, /confident we can FINISH conquering the whole nation/i);
-  assert.match(text, /current(ly)? available troops or committed-to-defender ratio do NOT measure total territorial resistance/i);
+  assert.match(
+    text,
+    /current(ly)? available troops or committed-to-defender ratio do NOT measure total territorial resistance/i,
+  );
   assert.match(text, /at most twenty percent/);
   assert.match(text, /attacker's reserve PLUS its active incoming force/);
   assert.match(text, /our_reserve_is_stronger/);
@@ -78,7 +93,7 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
     text,
     /31\.6|35\.3|once per second|every second|polling|1\.25|1\.7/,
   );
-  assert.equal(POLICY_VERSION, "land-strategy-v4.3-tribe-focus");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.4-focused-gate");
 });
 
 test("accepts zero troops and reserves temporarily above capacity", () => {

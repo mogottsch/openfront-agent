@@ -1,7 +1,7 @@
 // Strict bridge between worker-checked naval candidates and bounded Jev
 // Choices. No clicked tile/source shore is ever sent to the model. The actual
 // game worker and current tick remain authoritative at execution time.
-import { fractionsForTarget } from "./observation.js";
+import { fractionsForTarget, landStrategy } from "./observation.js";
 
 const only = (v, keys) =>
   v !== null &&
@@ -178,10 +178,37 @@ export function validateNavalProposal(value, { gameId, snapshotTick }) {
   return value;
 }
 
+function navalPriorityReason(strategy, candidate) {
+  if (
+    strategy.focus_tribe_id !== null &&
+    candidate.target_owner_id !== strategy.focus_tribe_id
+  )
+    return "finish_focused_tribe_before_new_boat";
+  if (
+    strategy.focus_tribe_id === null &&
+    strategy.active_tribe_target_ids.length &&
+    !strategy.active_tribe_target_ids.includes(candidate.target_owner_id)
+  )
+    return "finish_current_tribe_attacks_before_new_boat";
+  if (
+    strategy.focus_tribe_id === null &&
+    !strategy.active_tribe_target_ids.length &&
+    strategy.bordering_tribe_ids.length &&
+    candidate.target_type === "nation"
+  )
+    return "conquer_bordering_tribes_before_nation_boat";
+  return null;
+}
+
 export function navalChoices(value, land) {
   if (value === null) return { wait: { kind: "wait" } };
   const output = { wait: { kind: "wait" } };
+  const strategy = landStrategy(land);
   for (const [index, c] of value.candidates.entries()) {
+    // Moritz's reviewed no-new-fronts priority is applied before inference,
+    // never as a post-choice substitution. The model-state list below discloses
+    // worker-legal coasts withheld for strategy rather than geometry.
+    if (navalPriorityReason(strategy, c)) continue;
     for (const fraction of fractionsForTarget(c.target_type)) {
       // Land observation was taken after the infrequent topology scan. Its
       // display reserve is the fresher bounded estimate; execution still uses
@@ -239,8 +266,27 @@ export function navalCriteria(actions) {
   );
 }
 
-export function navalModelState(value) {
+export function navalModelState(value, land = null) {
   if (value === null) return { status: "not_currently_scanned" };
+  const strategy = land ? landStrategy(land) : null;
+  const allowed = strategy
+    ? value.candidates.filter((c) => !navalPriorityReason(strategy, c))
+    : value.candidates;
+  const withheld = strategy
+    ? value.candidates.flatMap((c) => {
+        const reason = navalPriorityReason(strategy, c);
+        return reason
+          ? [
+              {
+                candidate_id: c.id,
+                target_owner_id: c.target_owner_id,
+                target_type: c.target_type,
+                reason,
+              },
+            ]
+          : [];
+      })
+    : [];
   const known = value.boats.active_transports.filter(
     (b) => b.troops_internal !== null,
   );
@@ -256,11 +302,13 @@ export function navalModelState(value) {
       unknown_active_troops_count:
         value.boats.active_transports.length - known.length,
     },
-    offered_destinations: value.candidates.length,
+    offered_destinations: allowed.length,
+    worker_checked_destinations: value.candidates.length,
     omitted_destinations: value.coverage.omitted_count,
+    strategically_withheld_destinations: withheld,
     geographic_uncertainty: value.coverage.certainty,
     coast_summary: value.coverage.coast,
-    offered_boat_sites: value.candidates.map((c) => ({
+    offered_boat_sites: allowed.map((c) => ({
       id: c.id,
       target_type: c.target_type,
       target_owner_id: c.target_owner_id,
