@@ -47,6 +47,7 @@ function fixture() {
       isAlive: () => true,
       type: () => id === 1 ? "HUMAN" : id === 3 ? "NATION" : "BOT",
       troops: () => id === 1 ? 25000 : id === 2 ? 10000 : 15000,
+      gold: () => 125000n,
       capacity: id === 1 ? 120000 : 50000,
       numTilesOwned: () => owners.filter((owner) => owner === id).length,
       isOnSameTeam: () => false,
@@ -78,6 +79,7 @@ test("core observation mirrors v4.1 border units and all neighbor attackers", ()
   });
   assert.deepEqual(o.self, {
     id: 1, troops: 2500, troop_capacity: 12000, territory_tiles: 1,
+    gold: "125000",
   });
   assert.equal(o.neighbors[0].incoming_attacks[0].attacker_id, 1);
   assert.deepEqual(o.neighbors[0].incoming_attacks[1], {
@@ -107,6 +109,7 @@ test("core observation is field-for-field equal to browser GameView adapter on t
     wrapped.set(id, {
       smallID: core.smallID, isPlayer: core.isPlayer, isAlive: core.isAlive,
       type: core.type, troops: core.troops, capacity: core.capacity,
+      gold: () => 125000n,
       numTilesOwned: core.numTilesOwned,
       isOnSameTeam: core.isOnSameTeam, isAlliedWith: core.isAlliedWith,
       borderTiles: async () => ({ borderTiles: core.borderTiles() }),
@@ -121,7 +124,17 @@ test("core observation is field-for-field equal to browser GameView adapter on t
     read: () => ({ tick: game.ticks(), ready: true, ended: false }),
     sendAttack: () => { throw new Error("read-only test"); },
   });
-  assert.deepEqual(observeCore(game, me).observation, (await adapter.observe()).observation);
+  const browserObservation = (await adapter.observe()).observation;
+  assert.equal(browserObservation.self.gold, "125000");
+  assert.deepEqual(observeCore(game, me).observation, browserObservation);
+});
+
+test("core observation rejects missing, numeric and negative gold instead of omitting the fact", () => {
+  const f = fixture();
+  for (const invalid of [undefined, 125000, -1n]) {
+    f.me.gold = () => invalid;
+    assert.throws(() => observeCore(f.game, f.me), /gold snapshot is unavailable/);
+  }
 });
 
 test("only selected offered action passes core tick, border and legality recheck", () => {

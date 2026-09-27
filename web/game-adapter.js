@@ -94,6 +94,23 @@ export function createGameAdapter({ game, read, sendAttack }) {
       ? other
       : null;
   };
+  // Focus is only a read-only lookup of an already chosen smallID. Missing
+  // neighbor contact is not evidence of player death: query GameView's
+  // authoritative PlayerView identity and alive flag directly instead.
+  const focusUnavailable = (id, tick, reason) => ({
+    status: "unavailable", id, tick, reason,
+  });
+  const focusChange = (tick, me, other, id, myPlayerId, targetPlayerId, type, gameId) => {
+    const state = read();
+    if (state?.ready !== true || state.ended === true ||
+        state.tick !== tick || game.ticks() !== tick ||
+        (gameId !== null && game.gameID?.() !== gameId)) return "stale_snapshot";
+    if (game.myPlayer() !== me || me.id() !== myPlayerId ||
+        targetPlayer(id) !== other || other.smallID() !== id ||
+        other.id() !== targetPlayerId) return "identity_changed";
+    if (other.type() !== type) return "type_changed";
+    return null;
+  };
   const incoming = (player) =>
     player.incomingAttacks().map((a) => {
       const attacker = targetPlayer(a.attackerID);
@@ -110,9 +127,137 @@ export function createGameAdapter({ game, read, sendAttack }) {
         retreating: a.retreating,
       };
     });
+  async function readFocusStatus(id, {
+    expectedTick = null, borderTiles = null, prechecked = null,
+  } = {}) {
+    const actualTick = game.ticks();
+    // When called by observe({focusId}), tick labels the requested snapshot;
+    // a later actual tick means unavailable rather than relabeling old facts.
+    const tick = expectedTick ?? actualTick;
+    if (!Number.isInteger(id) || id < 1 || id > 4095)
+      return focusUnavailable(id, tick, "invalid_id");
+    const state = read();
+    if (state?.ready !== true || state.ended === true ||
+        state.tick !== actualTick || actualTick !== tick) {
+      return focusUnavailable(id, tick, "stale_snapshot");
+    }
+    const me = game.myPlayer();
+    const other = targetPlayer(id);
+    if (!me || !other || other.smallID() !== id || other === me)
+      return focusUnavailable(id, tick, "player_unresolved");
+    const type = other.type();
+    const name = typeName[type];
+    if (!name) return focusUnavailable(id, tick, "type_unavailable");
+    const playerId = other.id();
+    const myPlayerId = me.id();
+    const gameId = game.gameID?.() ?? null;
+    const changed = () => focusChange(tick, me, other, id,
+      myPlayerId, playerId, type, gameId);
+    const unavailableIfChanged = () => {
+      const reason = changed();
+      return reason ? focusUnavailable(id, tick, reason) : null;
+    };
+    const initialChange = unavailableIfChanged();
+    if (initialChange) return initialChange;
+    const deadStatus = () => ({ status: "dead", id, tick,
+      game_id: gameId, player_id: playerId, alive: false, type: name,
+      territory_tiles: other.numTilesOwned() });
+    // Only the authoritative resolved PlayerView alive bit proves death.
+    // A player may be alive with no current border or zero owned tiles.
+    if (other.isAlive() === false) return deadStatus();
+    if (other.isAlive() !== true)
+      return focusUnavailable(id, tick, "alive_unavailable");
+    let borders = borderTiles;
+    if (borders === null) {
+      try { ({ borderTiles: borders } = await me.borderTiles()); }
+      catch { return focusUnavailable(id, tick, "border_worker_error"); }
+    }
+    const staleBorder = unavailableIfChanged();
+    if (staleBorder) return staleBorder;
+    if (other.isAlive() === false) return deadStatus();
+    if (other.isAlive() !== true)
+      return focusUnavailable(id, tick, "alive_unavailable");
+    if (!borders || typeof borders[Symbol.iterator] !== "function")
+      return focusUnavailable(id, tick, "border_unavailable");
+    let contact = null;
+    outer: for (const owned of borders) {
+      if (!Number.isInteger(owned) || owned < 0 ||
+          owned >= game.width() * game.height()) {
+        return focusUnavailable(id, tick, "border_unavailable");
+      }
+      if (game.ownerID(owned) !== me.smallID()) continue;
+      for (const tile of game.neighbors(owned)) {
+        if (matchingTile(tile, id)) {
+          contact = tile;
+          break outer;
+        }
+      }
+    }
+    let workerChecked = false;
+    let workerCanAttack = false;
+    if (contact !== null) {
+      if (prechecked !== null) {
+        // Only observe() can pass this internal result from its own real
+        // worker query. The public focusStatus(id) always queries directly.
+        if (prechecked.id !== id || prechecked.tick !== tick ||
+            prechecked.tile !== contact ||
+            typeof prechecked.worker_checked !== "boolean" ||
+            typeof prechecked.can_attack !== "boolean") {
+          return focusUnavailable(id, tick, "prechecked_mismatch");
+        }
+        workerChecked = prechecked.worker_checked;
+        workerCanAttack = workerChecked && prechecked.can_attack;
+      } else {
+        try {
+          const actions = await me.actions(contact, null);
+          workerChecked = true;
+          workerCanAttack = actions?.canAttack === true;
+        } catch { return focusUnavailable(id, tick, "action_worker_error"); }
+      }
+    }
+    const staleAction = unavailableIfChanged();
+    if (staleAction) return staleAction;
+    if (other.isAlive() === false) return deadStatus();
+    if (other.isAlive() !== true)
+      return focusUnavailable(id, tick, "alive_unavailable");
+    if (contact !== null && (!matchingTile(contact, id) ||
+        !game.neighbors(contact).some((tile) => game.ownerID(tile) === me.smallID()))) {
+      return focusUnavailable(id, tick, "border_changed");
+    }
+    const owned = other.numTilesOwned();
+    const ourInternal = me.troops();
+    const theirInternal = other.troops();
+    if (!Number.isInteger(owned) || owned < 0 ||
+        !Number.isFinite(ourInternal) || ourInternal < 0 ||
+        !Number.isFinite(theirInternal) || theirInternal < 0) {
+      return focusUnavailable(id, tick, "strength_unavailable");
+    }
+    const ours = Math.floor(ourInternal / 10);
+    const theirs = Math.floor(theirInternal / 10);
+    let activeInternal = 0;
+    let activeCount = 0;
+    for (const attack of me.outgoingAttacks()) {
+      if (attack.targetID !== id || attack.retreating ||
+          !Number.isFinite(attack.troops) || attack.troops <= 0) continue;
+      activeInternal += attack.troops;
+      activeCount++;
+    }
+    const relationship = relation(me, other);
+    return { status: "available", id, tick, game_id: gameId,
+      player_id: playerId, alive: true, type: name,
+      territory_tiles: owned, relationship, adjacent: contact !== null,
+      worker_checked: workerChecked,
+      can_attack: owned > 0 && contact !== null && workerCanAttack &&
+        relationship === "unallied" && matchingTile(contact, id),
+      own_reserve_troops: ours, target_reserve_troops: theirs,
+      reserve_ratio: theirs > 0 ? Math.round(ours / theirs * 1000) / 1000 : null,
+      active_outgoing_count: activeCount,
+      active_outgoing_troops: Math.floor(activeInternal / 10) };
+  }
   return {
     read,
-    async observe() {
+    focusStatus: (id) => readFocusStatus(id),
+    async observe({ focusId } = {}) {
       const me = game.myPlayer();
       if (!read().ready || !me)
         throw new Error("Game is not ready for observation");
@@ -124,8 +269,11 @@ export function createGameAdapter({ game, read, sendAttack }) {
         me.smallID(),
         borderTiles,
       );
+      const gold = me.gold?.();
+      if (typeof gold !== "bigint" || gold < 0n)
+        throw new Error("Own gold snapshot is unavailable");
       const observation = {
-        self: stats(game, me),
+        self: { ...stats(game, me), gold: gold.toString() },
         border,
         neighbors: [...contacts]
           .sort((a, b) => a[0] - b[0])
@@ -163,7 +311,21 @@ export function createGameAdapter({ game, read, sendAttack }) {
             matchingTile(tile, n.id);
         }),
       );
-      return { tick, observation };
+      if (focusId === undefined) return { tick, observation };
+      if (focusId === null) return { tick, observation, focus_status: null };
+      // Do not put focus metadata into the strict raw observation yet. Reuse
+      // the same border worker result and bind the focus lookup to this tick.
+      const focusedNeighbor = observation.neighbors.find((n) => n.id === focusId);
+      const focusContact = contacts.get(focusId);
+      const prechecked = focusedNeighbor && focusContact ? {
+        id: focusId, tick, tile: focusContact.tile,
+        worker_checked: focusedNeighbor.relationship === "unallied",
+        can_attack: focusedNeighbor.can_attack,
+      } : null;
+      const focus_status = await readFocusStatus(focusId, {
+        expectedTick: tick, borderTiles, prechecked,
+      });
+      return { tick, observation, focus_status };
     },
     async canExecute(action) {
       permit = null;

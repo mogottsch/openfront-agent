@@ -38,6 +38,9 @@ export function observeCore(game, me) {
   if (!me?.hasSpawned() || !me.isAlive() || me.type() !== "HUMAN")
     throw new Error("Human is not active for observation");
   const tick = game.ticks();
+  const gold = me.gold?.();
+  if (typeof gold !== "bigint" || gold < 0n)
+    throw new Error("Own gold snapshot is unavailable");
   const { border, contacts } = summarizeBorders(game, me.smallID(), me.borderTiles());
   const neighbors = [...contacts].sort((a, b) => a[0] - b[0]).map(([id, contact]) => {
     const other = game.playerBySmallID(id);
@@ -57,7 +60,7 @@ export function observeCore(game, me) {
     };
   });
   const observation = validateObservation({
-    self: stats(game, me),
+    self: { ...stats(game, me), gold: gold.toString() },
     border,
     neighbors,
     incoming_attacks: attacksAgainst(me),
