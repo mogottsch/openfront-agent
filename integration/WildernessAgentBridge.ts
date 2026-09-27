@@ -31,7 +31,7 @@ export function createGuardedIntentSenders(
     if (
       !state.ready ||
       state.ended ||
-      unit !== UnitType.City ||
+      (unit !== UnitType.City && unit !== UnitType.DefensePost) ||
       !Number.isInteger(tile) ||
       !game.isValidRef(tile)
     )

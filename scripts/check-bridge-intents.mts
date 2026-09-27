@@ -71,11 +71,14 @@ assert.equal(sendBuild(UnitType.City, 2), true);
 assert(emitted[1] instanceof BuildUnitIntentEvent);
 assert.equal(emitted[1].unit, UnitType.City);
 assert.equal(emitted[1].tile, 2);
-assert.equal(sendBuild(UnitType.DefensePost, 2), false);
+assert.equal(sendBuild(UnitType.DefensePost, 2), true);
+assert(emitted[2] instanceof BuildUnitIntentEvent);
+assert.equal(emitted[2].unit, UnitType.DefensePost);
+assert.equal(sendBuild(UnitType.SAMLauncher, 2), false);
 assert.equal(sendAttack(null, 250), true);
-assert(emitted[2] instanceof SendAttackIntentEvent);
-assert.equal(emitted[2].targetID, null);
-assert.equal(emitted[2].troops, 250);
+assert(emitted[3] instanceof SendAttackIntentEvent);
+assert.equal(emitted[3].targetID, null);
+assert.equal(emitted[3].troops, 250);
 state.ended = true;
 assert.equal(sendBoat(2, 962), false);
 assert.equal(sendBuild(UnitType.City, 2), false);
@@ -86,7 +89,7 @@ assert.equal(sendBoat(2, 962), false);
 reserve = 0;
 state.ready = true;
 assert.equal(sendBoat(2, 962), false);
-assert.equal(emitted.length, 3);
+assert.equal(emitted.length, 4);
 console.log(
-  "Normal attack, City and boat events passed the guarded local intent envelope.",
+  "Normal attack, City, Defense Post and boat events passed the guarded local intent envelope.",
 );
