@@ -16,58 +16,126 @@ import {
   HYBRID_POLICY_VERSION,
 } from "./hybrid-policy.mjs";
 import { validateHybridInput } from "../web/hybrid-observation.js";
-import { buildNavalDecomposedRequest, parseNavalDecomposedDecision,
-  NAVAL_DECOMPOSED_POLICY_VERSION } from "./naval-decomposed-policy.mjs";
-import { createCopilotPlanner, hasCopilotServerToken, CopilotPhaseError,
-  COPILOT_FAILURE_STAGES } from "./copilot-planner.mjs";
+import {
+  buildNavalDecomposedRequest,
+  parseNavalDecomposedDecision,
+  NAVAL_DECOMPOSED_POLICY_VERSION,
+} from "./naval-decomposed-policy.mjs";
+import {
+  createCopilotPlanner,
+  hasCopilotServerToken,
+  CopilotPhaseError,
+  COPILOT_FAILURE_STAGES,
+} from "./copilot-planner.mjs";
 import { createPlanSession } from "./plan-session.mjs";
 
 const COPILOT_PLAN_PROMPT_VERSION = "copilot-plan-v1";
-const PLAN_REASONS = new Set(["invalid_input", "stale_heartbeat", "sdk_auth_unavailable",
-  "sdk_runtime_or_schema", "timeout", "unknown"]);
-const SERVER_PLAN_STAGES = new Set(["server_input", "server_heartbeat", "server_pacing",
-  "plan_session", "response_liveness", "server_log", "unexpected"]);
-const SDK_EVENT_TYPES = new Set(["authentication", "authorization", "quota",
-  "rate_limit", "context_limit", "query"]);
-const SDK_EVENT_CODES = new Set(["quota_exceeded", "session_quota_exceeded",
-  "billing_not_configured", "user_weekly_rate_limited", "user_global_rate_limited",
-  "rate_limited", "user_model_rate_limited", "integration_rate_limited"]);
-const SDK_EVENT_STATUSES = new Set([400, 401, 402, 403, 404, 408, 409,
-  413, 422, 429, 500, 502, 503, 504]);
+const PLAN_REASONS = new Set([
+  "invalid_input",
+  "stale_heartbeat",
+  "sdk_auth_unavailable",
+  "sdk_runtime_or_schema",
+  "timeout",
+  "unknown",
+]);
+const SERVER_PLAN_STAGES = new Set([
+  "server_input",
+  "server_heartbeat",
+  "server_pacing",
+  "plan_session",
+  "response_liveness",
+  "server_log",
+  "unexpected",
+]);
+const SDK_EVENT_TYPES = new Set([
+  "authentication",
+  "authorization",
+  "quota",
+  "rate_limit",
+  "context_limit",
+  "query",
+]);
+const SDK_EVENT_CODES = new Set([
+  "quota_exceeded",
+  "session_quota_exceeded",
+  "billing_not_configured",
+  "user_weekly_rate_limited",
+  "user_global_rate_limited",
+  "rate_limited",
+  "user_model_rate_limited",
+  "integration_rate_limited",
+]);
+const SDK_EVENT_STATUSES = new Set([
+  400, 401, 402, 403, 404, 408, 409, 413, 422, 429, 500, 502, 503, 504,
+]);
 function safePlanStage(error, serverStage) {
-  if (error instanceof CopilotPhaseError &&
-      COPILOT_FAILURE_STAGES.includes(error.failure_stage)) return error.failure_stage;
+  if (
+    error instanceof CopilotPhaseError &&
+    COPILOT_FAILURE_STAGES.includes(error.failure_stage)
+  )
+    return error.failure_stage;
   return SERVER_PLAN_STAGES.has(serverStage) ? serverStage : "unexpected";
 }
 function classifyPlanFailure(error, stage, sdkTurnAttempted) {
   if (error instanceof CopilotPhaseError) {
-    if (["authentication", "authorization"].includes(error.sdk_error_type) ||
-        error.sdk_status === 401 || error.sdk_status === 403)
+    if (
+      ["authentication", "authorization"].includes(error.sdk_error_type) ||
+      error.sdk_status === 401 ||
+      error.sdk_status === 403
+    )
       return "sdk_auth_unavailable";
     if (["preflight", "postflight_freshness"].includes(error.failure_stage))
       return "stale_heartbeat";
-    if (["parse_json", "validate_plan", "build_prompt", "create_client",
-      "start_client", "create_session", "cleanup"].includes(error.failure_stage) &&
-        error.status !== 401 && error.status !== 403 &&
-        error.diagnostic_kind !== "timeout" && error.diagnostic_kind !== "auth" &&
-        !["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"].includes(error.code))
+    if (
+      [
+        "parse_json",
+        "validate_plan",
+        "build_prompt",
+        "create_client",
+        "start_client",
+        "create_session",
+        "cleanup",
+      ].includes(error.failure_stage) &&
+      error.status !== 401 &&
+      error.status !== 403 &&
+      error.diagnostic_kind !== "timeout" &&
+      error.diagnostic_kind !== "auth" &&
+      !["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"].includes(error.code)
+    )
       return "sdk_runtime_or_schema";
   }
   // Inspect only for classification. Never log, return or interpolate raw SDK
   // messages: providers may include credentials or request contents in them.
   const message = typeof error?.message === "string" ? error.message : "";
-  if (/^Stale plan |^Plan snapshot is not the active fresh heartbeat|^Plan request cancelled or stale/.test(message))
+  if (
+    /^Stale plan |^Plan snapshot is not the active fresh heartbeat|^Plan request cancelled or stale/.test(
+      message,
+    )
+  )
     return "stale_heartbeat";
-  if (!sdkTurnAttempted) return stage === "input" ? "invalid_input" : "stale_heartbeat";
+  if (!sdkTurnAttempted)
+    return stage === "input" ? "invalid_input" : "stale_heartbeat";
   const status = Number(error?.status ?? error?.statusCode);
-  if (status === 401 || status === 403 || error?.diagnostic_kind === "auth" ||
-      /\b(unauthorized|not authenticated|authentication required|login required|please (log|sign) in|http (401|403))\b/i.test(message))
+  if (
+    status === 401 ||
+    status === 403 ||
+    error?.diagnostic_kind === "auth" ||
+    /\b(unauthorized|not authenticated|authentication required|login required|please (log|sign) in|http (401|403))\b/i.test(
+      message,
+    )
+  )
     return "sdk_auth_unavailable";
-  if (error?.name === "TimeoutError" || error?.diagnostic_kind === "timeout" ||
-      ["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"].includes(error?.code) ||
-      /\b(timeout|timed out)\b/i.test(message)) return "timeout";
-  if (["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"].includes(error?.code) ||
-      /\b(runtime|responseSchema|schema|unsupported|module)\b/i.test(message))
+  if (
+    error?.name === "TimeoutError" ||
+    error?.diagnostic_kind === "timeout" ||
+    ["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"].includes(error?.code) ||
+    /\b(timeout|timed out)\b/i.test(message)
+  )
+    return "timeout";
+  if (
+    ["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"].includes(error?.code) ||
+    /\b(runtime|responseSchema|schema|unsupported|module)\b/i.test(message)
+  )
     return "sdk_runtime_or_schema";
   return "unknown";
 }
@@ -85,6 +153,7 @@ async function readBoundedJson(req, maxBytes) {
 const publicFiles = new Map([
   ["/agent.js", new URL("../web/agent.js", import.meta.url)],
   ["/controller.js", new URL("../web/controller.js", import.meta.url)],
+  ["/tribe-focus.js", new URL("../web/tribe-focus.js", import.meta.url)],
   ["/observation.js", new URL("../web/observation.js", import.meta.url)],
   ["/game-adapter.js", new URL("../web/game-adapter.js", import.meta.url)],
   [
@@ -103,9 +172,18 @@ const publicFiles = new Map([
   ["/plan-client.js", new URL("../web/plan-client.js", import.meta.url)],
   ["/naval-spatial.js", new URL("../web/naval-spatial.js", import.meta.url)],
   ["/naval-adapter.js", new URL("../web/naval-adapter.js", import.meta.url)],
-  ["/naval-observation.js", new URL("../web/naval-observation.js", import.meta.url)],
-  ["/defense-observation.js", new URL("../web/defense-observation.js", import.meta.url)],
-  ["/defense-post-adapter.js", new URL("../web/defense-post-adapter.js", import.meta.url)],
+  [
+    "/naval-observation.js",
+    new URL("../web/naval-observation.js", import.meta.url),
+  ],
+  [
+    "/defense-observation.js",
+    new URL("../web/defense-observation.js", import.meta.url),
+  ],
+  [
+    "/defense-post-adapter.js",
+    new URL("../web/defense-post-adapter.js", import.meta.url),
+  ],
 ]);
 
 export function createAgentServer({
@@ -130,9 +208,13 @@ export function createAgentServer({
   planNow = Date.now,
   maxPlanRequestsPerSession = 3,
 } = {}) {
-  if (typeof planNow !== "function" || !Number.isSafeInteger(maxPlanRequestsPerSession) ||
-      maxPlanRequestsPerSession < 1 || maxPlanRequestsPerSession > 10 ||
-      (planner !== null && typeof planner !== "function")) {
+  if (
+    typeof planNow !== "function" ||
+    !Number.isSafeInteger(maxPlanRequestsPerSession) ||
+    maxPlanRequestsPerSession < 1 ||
+    maxPlanRequestsPerSession > 10 ||
+    (planner !== null && typeof planner !== "function")
+  ) {
     throw new Error("Invalid planner configuration");
   }
   // Mock planners supplied by the test host are isolated from real auth. The
@@ -141,8 +223,13 @@ export function createAgentServer({
   const plannerAuthReady = planner !== null || hasCopilotServerToken();
   const plannerReady = enableCopilotPlanner && plannerAuthReady;
   const planModel = plannerReady
-    ? (planner ?? createCopilotPlanner({ model: "gpt-5-mini",
-        maxSnapshotAgeMs: 20_000, maxTickLag: 200, timeoutMs: 15_000 }))
+    ? (planner ??
+      createCopilotPlanner({
+        model: "gpt-5-mini",
+        maxSnapshotAgeMs: 20_000,
+        maxTickLag: 200,
+        timeoutMs: 15_000,
+      }))
     : null;
   let busy = false;
   let lastCall = -Infinity;
@@ -188,16 +275,31 @@ export function createAgentServer({
         policy: POLICY_VERSION,
         hybridPolicy: HYBRID_POLICY_VERSION,
         hybridEnabled: enableHybridDecisions,
-        navalEnabled: enableHybridDecisions && enableNavalDecisions && requireStartSession,
-        defensePostEnabled: enableHybridDecisions && enableDefensePostDecisions && requireStartSession,
-        decomposedNavalProbeEnabled: enableHybridDecisions && enableNavalDecisions &&
-          enableNavalDecomposedProbe && requireStartSession,
-        decomposedNavalLiveEnabled: enableHybridDecisions && enableNavalDecisions &&
-          enableNavalDecomposedLive && requireStartSession,
-        plannerEnabled: enableHybridDecisions && plannerReady && requireStartSession,
-        plannerStatus: !enableCopilotPlanner ? "disabled" :
-          !plannerAuthReady ? "token_missing" :
-          !enableHybridDecisions || !requireStartSession ? "hybrid_disabled" : "ready",
+        navalEnabled:
+          enableHybridDecisions && enableNavalDecisions && requireStartSession,
+        defensePostEnabled:
+          enableHybridDecisions &&
+          enableDefensePostDecisions &&
+          requireStartSession,
+        decomposedNavalProbeEnabled:
+          enableHybridDecisions &&
+          enableNavalDecisions &&
+          enableNavalDecomposedProbe &&
+          requireStartSession,
+        decomposedNavalLiveEnabled:
+          enableHybridDecisions &&
+          enableNavalDecisions &&
+          enableNavalDecomposedLive &&
+          requireStartSession,
+        plannerEnabled:
+          enableHybridDecisions && plannerReady && requireStartSession,
+        plannerStatus: !enableCopilotPlanner
+          ? "disabled"
+          : !plannerAuthReady
+            ? "token_missing"
+            : !enableHybridDecisions || !requireStartSession
+              ? "hybrid_disabled"
+              : "ready",
         planCallLimit: maxPlanRequestsPerSession,
         planCallsUsed: session?.planCount ?? 0,
         requiresStart: requireStartSession,
@@ -271,8 +373,10 @@ export function createAgentServer({
             nextSession.sdkTurnAttempted = true;
             return planModel(args);
           },
-          now: planNow, maxSnapshotAgeMs: 20_000,
-          maxHeartbeatGapMs: 2_000, maxTickLag: 200,
+          now: planNow,
+          maxSnapshotAgeMs: 20_000,
+          maxHeartbeatGapMs: 2_000,
+          maxTickLag: 200,
         });
       }
       session = nextSession;
@@ -296,41 +400,79 @@ export function createAgentServer({
       // A separate Start token and hybrid opt-in are required even if legacy
       // tests configure requireStartSession:false for the Jev decision route.
       const authorized = session;
-      if (!requireStartSession || !enableHybridDecisions || !plannerReady ||
-          !authorized?.planSession || authorized.mode !== "hybrid" ||
-          req.headers["x-agent-session"] !== authorized.token ||
-          performance.now() >= authorized.expiresAt) {
-        return send(403, { error: "Hybrid planner requires explicit Start and opt-in" });
+      if (
+        !requireStartSession ||
+        !enableHybridDecisions ||
+        !plannerReady ||
+        !authorized?.planSession ||
+        authorized.mode !== "hybrid" ||
+        req.headers["x-agent-session"] !== authorized.token ||
+        performance.now() >= authorized.expiresAt
+      ) {
+        return send(403, {
+          error: "Hybrid planner requires explicit Start and opt-in",
+        });
       }
-      const planDiagnostic = async (status, reason,
-        attempted = authorized.sdkTurnAttempted, failureStage = "server_input", sdkError = null) => {
+      const planDiagnostic = async (
+        status,
+        reason,
+        attempted = authorized.sdkTurnAttempted,
+        failureStage = "server_input",
+        sdkError = null,
+      ) => {
         const code = PLAN_REASONS.has(reason) ? reason : "unknown";
-        const phase = SERVER_PLAN_STAGES.has(failureStage) ||
-          COPILOT_FAILURE_STAGES.includes(failureStage) ? failureStage : "unexpected";
-        const type = SDK_EVENT_TYPES.has(sdkError?.sdk_error_type) ? sdkError.sdk_error_type : null;
+        const phase =
+          SERVER_PLAN_STAGES.has(failureStage) ||
+          COPILOT_FAILURE_STAGES.includes(failureStage)
+            ? failureStage
+            : "unexpected";
+        const type = SDK_EVENT_TYPES.has(sdkError?.sdk_error_type)
+          ? sdkError.sdk_error_type
+          : null;
         const details = {
           ...(type ? { sdk_error_type: type } : {}),
-          ...(type && SDK_EVENT_CODES.has(sdkError?.sdk_error_code) ?
-            { sdk_error_code: sdkError.sdk_error_code } : {}),
-          ...(SDK_EVENT_STATUSES.has(sdkError?.sdk_status) ?
-            { sdk_status: sdkError.sdk_status } : {}),
+          ...(type && SDK_EVENT_CODES.has(sdkError?.sdk_error_code)
+            ? { sdk_error_code: sdkError.sdk_error_code }
+            : {}),
+          ...(SDK_EVENT_STATUSES.has(sdkError?.sdk_status)
+            ? { sdk_status: sdkError.sdk_status }
+            : {}),
         };
-        const safe = { error: `Planner unavailable (${code})`, reason_code: code,
-          failure_stage: phase, sdk_turn_attempted: Boolean(attempted),
-          plan_count: authorized.planCount, ...details };
+        const safe = {
+          error: `Planner unavailable (${code})`,
+          reason_code: code,
+          failure_stage: phase,
+          sdk_turn_attempted: Boolean(attempted),
+          plan_count: authorized.planCount,
+          ...details,
+        };
         try {
-          await log({ timestamp: new Date().toISOString(),
-            event: "copilot_plan_diagnostic", policy: COPILOT_PLAN_PROMPT_VERSION,
+          await log({
+            timestamp: new Date().toISOString(),
+            event: "copilot_plan_diagnostic",
+            policy: COPILOT_PLAN_PROMPT_VERSION,
             provider: attempted ? "official-copilot-sdk" : "none",
-            reason_code: code, failure_stage: phase, ...details,
-            sdk_turn_attempted: Boolean(attempted), plan_count: authorized.planCount });
-        } catch { /* log failure cannot reveal an upstream error or change the response */ }
+            reason_code: code,
+            failure_stage: phase,
+            ...details,
+            sdk_turn_attempted: Boolean(attempted),
+            plan_count: authorized.planCount,
+          });
+        } catch {
+          /* log failure cannot reveal an upstream error or change the response */
+        }
         return send(status, safe);
       };
       if (req.method === "GET" && pathname === "/plan") {
-        return send(200, { plan: authorized.gameId === null ? null :
-          authorized.planSession.getPlan({ session_id: authorized.id,
-            game_id: authorized.gameId }) });
+        return send(200, {
+          plan:
+            authorized.gameId === null
+              ? null
+              : authorized.planSession.getPlan({
+                  session_id: authorized.id,
+                  game_id: authorized.gameId,
+                }),
+        });
       }
       if (req.method !== "POST") return send(404, { error: "Not found" });
       if (!(req.headers["content-type"] ?? "").startsWith("application/json"))
@@ -338,14 +480,25 @@ export function createAgentServer({
       if (pathname === "/plan/heartbeat") {
         try {
           const value = await readBoundedJson(req, 4096);
-          if (session !== authorized || !authorized.gameId ||
-              value?.game_id !== authorized.gameId ||
-              !value || typeof value !== "object" || Array.isArray(value) ||
-              Object.keys(value).length !== 3 ||
-              !Object.hasOwn(value, "tick") || !Object.hasOwn(value, "region_ids"))
+          if (
+            session !== authorized ||
+            !authorized.gameId ||
+            value?.game_id !== authorized.gameId ||
+            !value ||
+            typeof value !== "object" ||
+            Array.isArray(value) ||
+            Object.keys(value).length !== 3 ||
+            !Object.hasOwn(value, "tick") ||
+            !Object.hasOwn(value, "region_ids")
+          )
             throw new Error("Wrong plan session or heartbeat shape");
-          const heartbeat = { session_id: authorized.id, game_id: authorized.gameId,
-            tick: value.tick, region_ids: value.region_ids, observed_at_ms: planNow() };
+          const heartbeat = {
+            session_id: authorized.id,
+            game_id: authorized.gameId,
+            tick: value.tick,
+            region_ids: value.region_ids,
+            observed_at_ms: planNow(),
+          };
           // /plan may be waiting for the shared 1s Jev deadline. Applying a
           // newer heartbeat before plan(snapshot) admission would make its
           // exact tick/timestamp check fail without a model call. Keep at most
@@ -353,26 +506,47 @@ export function createAgentServer({
           const admission = authorized.planAdmission;
           if (admission) {
             const last = admission.beats.at(-1) ?? admission.snapshot;
-            if (!Number.isSafeInteger(heartbeat.tick) || heartbeat.tick < last.tick ||
-                !Array.isArray(heartbeat.region_ids) || heartbeat.region_ids.length > 16 ||
-                heartbeat.region_ids.some((id) => typeof id !== "string" ||
-                  !/^[A-Za-z0-9:@#._/\-]{1,200}$/.test(id)) ||
-                new Set(heartbeat.region_ids).size !== heartbeat.region_ids.length ||
-                admission.beats.length >= 4) throw new Error("Invalid buffered heartbeat");
+            if (
+              !Number.isSafeInteger(heartbeat.tick) ||
+              heartbeat.tick < last.tick ||
+              !Array.isArray(heartbeat.region_ids) ||
+              heartbeat.region_ids.length > 16 ||
+              heartbeat.region_ids.some(
+                (id) =>
+                  typeof id !== "string" ||
+                  !/^[A-Za-z0-9:@#._/\-]{1,200}$/.test(id),
+              ) ||
+              new Set(heartbeat.region_ids).size !==
+                heartbeat.region_ids.length ||
+              admission.beats.length >= 4
+            )
+              throw new Error("Invalid buffered heartbeat");
             admission.beats.push(heartbeat);
           } else {
             authorized.planSession.heartbeat(heartbeat);
           }
-          return send(200, { plan: authorized.planSession.getPlan({
-            session_id: authorized.id, game_id: authorized.gameId }) });
+          return send(200, {
+            plan: authorized.planSession.getPlan({
+              session_id: authorized.id,
+              game_id: authorized.gameId,
+            }),
+          });
         } catch (error) {
           const reason = classifyPlanFailure(error, "input", false);
-          return planDiagnostic(error instanceof RangeError ? 413 :
-            reason === "stale_heartbeat" ? 409 : 400, reason, false,
-            "server_heartbeat");
+          return planDiagnostic(
+            error instanceof RangeError
+              ? 413
+              : reason === "stale_heartbeat"
+                ? 409
+                : 400,
+            reason,
+            false,
+            "server_heartbeat",
+          );
         }
       }
-      if (busy) return send(429, { error: "A decision request is already pending" });
+      if (busy)
+        return send(429, { error: "A decision request is already pending" });
       if (authorized.planCount >= maxPlanRequestsPerSession)
         return send(403, { error: "Copilot plan request cap reached" });
       busy = true; // shares Jev's single-flight lock; heartbeats can still arrive
@@ -380,23 +554,36 @@ export function createAgentServer({
       let stage = "input";
       try {
         const value = await readBoundedJson(req, 16_384);
-        if (!value || typeof value !== "object" || Array.isArray(value) ||
-            Object.keys(value).length !== 4 ||
-            !Object.hasOwn(value, "game_id") || !Object.hasOwn(value, "tick") ||
-            !Object.hasOwn(value, "region_ids") || !Object.hasOwn(value, "summary") ||
-            session !== authorized || performance.now() >= authorized.expiresAt ||
-            (authorized.gameId !== null && authorized.gameId !== value.game_id)) {
+        if (
+          !value ||
+          typeof value !== "object" ||
+          Array.isArray(value) ||
+          Object.keys(value).length !== 4 ||
+          !Object.hasOwn(value, "game_id") ||
+          !Object.hasOwn(value, "tick") ||
+          !Object.hasOwn(value, "region_ids") ||
+          !Object.hasOwn(value, "summary") ||
+          session !== authorized ||
+          performance.now() >= authorized.expiresAt ||
+          (authorized.gameId !== null && authorized.gameId !== value.game_id)
+        ) {
           return await planDiagnostic(400, "invalid_input");
         }
-        const snapshot = { ...value, session_id: authorized.id, observed_at_ms: planNow() };
+        const snapshot = {
+          ...value,
+          session_id: authorized.id,
+          observed_at_ms: planNow(),
+        };
         if (authorized.gameId === null) {
           authorized.planSession.start(snapshot); // no model call
           authorized.gameId = value.game_id;
         } else {
           stage = "heartbeat";
           authorized.planSession.heartbeat({
-            session_id: authorized.id, game_id: value.game_id,
-            tick: value.tick, region_ids: value.region_ids,
+            session_id: authorized.id,
+            game_id: value.game_id,
+            tick: value.tick,
+            region_ids: value.region_ids,
             observed_at_ms: snapshot.observed_at_ms,
           });
         }
@@ -404,11 +591,21 @@ export function createAgentServer({
         authorized.planAdmission = { snapshot, beats: [] };
         stage = "pacing";
         while (performance.now() < lastCall + minimumIntervalMs) {
-          await delay(Math.ceil(lastCall + minimumIntervalMs - performance.now()));
+          await delay(
+            Math.ceil(lastCall + minimumIntervalMs - performance.now()),
+          );
         }
-        if (session !== authorized || performance.now() >= authorized.expiresAt ||
-            authorized.planCount >= maxPlanRequestsPerSession) {
-          return await planDiagnostic(409, "stale_heartbeat", false, "server_pacing");
+        if (
+          session !== authorized ||
+          performance.now() >= authorized.expiresAt ||
+          authorized.planCount >= maxPlanRequestsPerSession
+        ) {
+          return await planDiagnostic(
+            409,
+            "stale_heartbeat",
+            false,
+            "server_pacing",
+          );
         }
         lastCall = performance.now();
         authorized.planCount++; // count attempts, including failures; max three per Start
@@ -426,36 +623,74 @@ export function createAgentServer({
           await running.catch(() => {});
           throw error;
         }
-        const stillCurrent = () => session === authorized &&
+        const stillCurrent = () =>
+          session === authorized &&
           performance.now() < authorized.expiresAt &&
-          authorized.planSession.getPlan({ session_id: authorized.id,
-            game_id: authorized.gameId })?.plan_version === plan.plan_version;
-        if (!stillCurrent()) return await planDiagnostic(409, "stale_heartbeat",
-          authorized.sdkTurnAttempted, "response_liveness");
+          authorized.planSession.getPlan({
+            session_id: authorized.id,
+            game_id: authorized.gameId,
+          })?.plan_version === plan.plan_version;
+        if (!stillCurrent())
+          return await planDiagnostic(
+            409,
+            "stale_heartbeat",
+            authorized.sdkTurnAttempted,
+            "response_liveness",
+          );
         stage = "log";
-        await log({ timestamp: new Date().toISOString(),
-          policy: COPILOT_PLAN_PROMPT_VERSION, provider: "official-copilot-sdk",
-          model: "gpt-5-mini", game_id: authorized.gameId,
-          source_tick: plan.source_tick, plan_version: plan.plan_version });
-        if (!stillCurrent()) return await planDiagnostic(409, "stale_heartbeat",
-          authorized.sdkTurnAttempted, "response_liveness");
+        await log({
+          timestamp: new Date().toISOString(),
+          policy: COPILOT_PLAN_PROMPT_VERSION,
+          provider: "official-copilot-sdk",
+          model: "gpt-5-mini",
+          game_id: authorized.gameId,
+          source_tick: plan.source_tick,
+          plan_version: plan.plan_version,
+        });
+        if (!stillCurrent())
+          return await planDiagnostic(
+            409,
+            "stale_heartbeat",
+            authorized.sdkTurnAttempted,
+            "response_liveness",
+          );
         return send(200, { plan });
       } catch (error) {
         // Never include raw provider messages, bodies, prompts or credentials.
-        const failureStage = safePlanStage(error,
-          stage === "input" ? "server_input" :
-          stage === "heartbeat" ? "server_heartbeat" :
-          stage === "pacing" ? "server_pacing" :
-          stage === "log" ? "server_log" : "plan_session");
-        const attempted = authorized.sdkTurnAttempted && failureStage !== "preflight";
+        const failureStage = safePlanStage(
+          error,
+          stage === "input"
+            ? "server_input"
+            : stage === "heartbeat"
+              ? "server_heartbeat"
+              : stage === "pacing"
+                ? "server_pacing"
+                : stage === "log"
+                  ? "server_log"
+                  : "plan_session",
+        );
+        const attempted =
+          authorized.sdkTurnAttempted && failureStage !== "preflight";
         const reason = classifyPlanFailure(error, stage, attempted);
-        const status = error instanceof RangeError ? 413 :
-          reason === "invalid_input" ? 400 :
-          reason === "stale_heartbeat" ? 409 :
-          reason === "sdk_auth_unavailable" ? 503 :
-          reason === "timeout" ? 504 : 502;
-        return await planDiagnostic(status, reason, attempted, failureStage,
-          error instanceof CopilotPhaseError ? error : null);
+        const status =
+          error instanceof RangeError
+            ? 413
+            : reason === "invalid_input"
+              ? 400
+              : reason === "stale_heartbeat"
+                ? 409
+                : reason === "sdk_auth_unavailable"
+                  ? 503
+                  : reason === "timeout"
+                    ? 504
+                    : 502;
+        return await planDiagnostic(
+          status,
+          reason,
+          attempted,
+          failureStage,
+          error instanceof CopilotPhaseError ? error : null,
+        );
       } finally {
         authorized.planAdmission = null;
         busy = false;
@@ -467,11 +702,21 @@ export function createAgentServer({
     const hybrid = pathname === "/hybrid-decision" || decomposed;
     if (req.method !== "POST" || (!hybrid && pathname !== "/decision"))
       return send(404, { error: "Not found" });
-    if (decomposedProbe && (!enableNavalDecomposedProbe || !enableNavalDecisions ||
-        !enableHybridDecisions || !requireStartSession))
+    if (
+      decomposedProbe &&
+      (!enableNavalDecomposedProbe ||
+        !enableNavalDecisions ||
+        !enableHybridDecisions ||
+        !requireStartSession)
+    )
       return send(403, { error: "Decomposed naval probe is disabled" });
-    if (decomposedLive && (!enableNavalDecomposedLive || !enableNavalDecisions ||
-        !enableHybridDecisions || !requireStartSession))
+    if (
+      decomposedLive &&
+      (!enableNavalDecomposedLive ||
+        !enableNavalDecisions ||
+        !enableHybridDecisions ||
+        !requireStartSession)
+    )
       return send(403, { error: "Decomposed naval decisions are disabled" });
     if (hybrid && !enableHybridDecisions)
       return send(403, { error: "Hybrid decision endpoint is disabled" });
@@ -507,22 +752,42 @@ export function createAgentServer({
       // Naval actions are a separately approved experiment. A present,
       // non-null raw proposal cannot reach TypeSafe without BOTH feature flags
       // and an explicit local hybrid Start, even in legacy test mode.
-      if (decomposed && (!supplied || !Object.hasOwn(supplied, "naval") ||
-          supplied.naval === null))
-        return send(400, { error: "Probe requires a worker-checked naval proposal" });
-      if (hybrid && supplied && Object.hasOwn(supplied, "naval") &&
-          supplied.naval !== null &&
-          (!enableNavalDecisions || !enableHybridDecisions ||
-            !requireStartSession || !authorized || authorized.mode !== "hybrid")) {
+      if (
+        decomposed &&
+        (!supplied ||
+          !Object.hasOwn(supplied, "naval") ||
+          supplied.naval === null)
+      )
+        return send(400, {
+          error: "Probe requires a worker-checked naval proposal",
+        });
+      if (
+        hybrid &&
+        supplied &&
+        Object.hasOwn(supplied, "naval") &&
+        supplied.naval !== null &&
+        (!enableNavalDecisions ||
+          !enableHybridDecisions ||
+          !requireStartSession ||
+          !authorized ||
+          authorized.mode !== "hybrid")
+      ) {
         return send(403, { error: "Naval decision endpoint is disabled" });
       }
       // Defense Post placement is a separate opt-in from City and naval.
       // Reject before paying TypeSafe; strict proposal validation follows
       // when the gate is on, and execution remains worker-owned in browser.
-      if (hybrid && supplied && Object.hasOwn(supplied, "defense_post") &&
-          supplied.defense_post !== null &&
-          (!enableDefensePostDecisions || !enableHybridDecisions ||
-            !requireStartSession || !authorized || authorized.mode !== "hybrid")) {
+      if (
+        hybrid &&
+        supplied &&
+        Object.hasOwn(supplied, "defense_post") &&
+        supplied.defense_post !== null &&
+        (!enableDefensePostDecisions ||
+          !enableHybridDecisions ||
+          !requireStartSession ||
+          !authorized ||
+          authorized.mode !== "hybrid")
+      ) {
         return send(403, { error: "Defense Post decisions are disabled" });
       }
       // A browser may never claim an authoritative Copilot plan. The future
@@ -531,11 +796,20 @@ export function createAgentServer({
         return send(400, { error: "Browser-supplied plans are not accepted" });
       // Only the server-owned validated plan can enter Jev's state. It is not
       // silently substituted if the browser snapshot predates that plan.
-      if (hybrid && authorized?.planSession && authorized.gameId === supplied.game_id) {
+      if (
+        hybrid &&
+        authorized?.planSession &&
+        authorized.gameId === supplied.game_id
+      ) {
         const live = authorized.planSession.getPlan({
-          session_id: authorized.id, game_id: authorized.gameId });
-        if (live && live.source_tick <= supplied.snapshot_tick &&
-            supplied.snapshot_tick < live.expires_tick) {
+          session_id: authorized.id,
+          game_id: authorized.gameId,
+        });
+        if (
+          live &&
+          live.source_tick <= supplied.snapshot_tick &&
+          supplied.snapshot_tick < live.expires_tick
+        ) {
           requestedPlan = { game_id: authorized.gameId, ...live };
         }
       }
@@ -546,7 +820,8 @@ export function createAgentServer({
       // acquiring the single-flight lock, so this cannot strand the server busy.
       request = decomposed
         ? buildNavalDecomposedRequest(observation, model)
-        : hybrid ? buildHybridRequest(observation, model)
+        : hybrid
+          ? buildHybridRequest(observation, model)
           : buildRequest(observation, model);
     } catch {
       return send(400, { error: OBSERVATION_ERROR });
@@ -595,45 +870,68 @@ export function createAgentServer({
       });
       if (!response.ok) throw new Error(`TypeSafe HTTP ${response.status}`);
       const answer = await response.json();
-      if (requireStartSession && (session !== authorized ||
-          performance.now() >= authorized.expiresAt))
+      if (
+        requireStartSession &&
+        (session !== authorized || performance.now() >= authorized.expiresAt)
+      )
         throw new Error("Start session changed during inference");
       const planStillApplicable = () => {
         if (!hybrid || !requestedPlan) return true;
         const stillLive = authorized.planSession?.getPlan({
-          session_id: authorized.id, game_id: authorized.gameId });
-        return Boolean(stillLive && stillLive.plan_version === requestedPlan.plan_version &&
+          session_id: authorized.id,
+          game_id: authorized.gameId,
+        });
+        return Boolean(
+          stillLive &&
+          stillLive.plan_version === requestedPlan.plan_version &&
           stillLive.source_tick === requestedPlan.source_tick &&
-          request.state.snapshot_tick < stillLive.expires_tick);
+          request.state.snapshot_tick < stillLive.expires_tick,
+        );
       };
       if (!planStillApplicable())
         throw new Error("Planner objective expired during Jev inference");
       const decision = {
         ...(decomposed
           ? parseNavalDecomposedDecision(answer, request)
-          : hybrid ? parseHybridDecision(answer, request)
+          : hybrid
+            ? parseHybridDecision(answer, request)
             : parseDecision(answer, request.questions.action.criteria)),
         latencyMs: Math.round(performance.now() - start),
       };
       await log({
         timestamp: new Date().toISOString(),
         requestStartedAt,
-        policy: decomposed ? NAVAL_DECOMPOSED_POLICY_VERSION :
-          hybrid ? HYBRID_POLICY_VERSION : POLICY_VERSION,
+        policy: decomposed
+          ? NAVAL_DECOMPOSED_POLICY_VERSION
+          : hybrid
+            ? HYBRID_POLICY_VERSION
+            : POLICY_VERSION,
         probe_only: decomposedProbe,
-        planProvenance: requestedPlan ? { provider: "official-copilot-sdk",
-          promptVersion: COPILOT_PLAN_PROMPT_VERSION,
-          version: requestedPlan.plan_version, source_tick: requestedPlan.source_tick } : null,
+        planProvenance: requestedPlan
+          ? {
+              provider: "official-copilot-sdk",
+              promptVersion: COPILOT_PLAN_PROMPT_VERSION,
+              version: requestedPlan.plan_version,
+              source_tick: requestedPlan.source_tick,
+            }
+          : null,
         request,
         decision,
       });
-      if (requireStartSession && (session !== authorized ||
-          performance.now() >= authorized.expiresAt))
+      if (
+        requireStartSession &&
+        (session !== authorized || performance.now() >= authorized.expiresAt)
+      )
         throw new Error("Start session changed before decision response");
       if (!planStillApplicable())
         throw new Error("Planner objective expired before decision response");
-      if (!res.destroyed) send(200, decomposedProbe ?
-        { probe_only: true, intent_emitted: false, decision } : decision);
+      if (!res.destroyed)
+        send(
+          200,
+          decomposedProbe
+            ? { probe_only: true, intent_emitted: false, decision }
+            : decision,
+        );
     } catch (error) {
       // Never relay arbitrary upstream bodies/errors; they may contain request credentials.
       const safeError = /^TypeSafe HTTP \d+$/.test(error.message)
@@ -668,9 +966,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       model: process.env.TYPESAFE_MODEL || "jev-latest",
       enableHybridDecisions: process.env.OPENFRONT_HYBRID_EXPERIMENT === "1",
       enableNavalDecisions: process.env.OPENFRONT_NAVAL_EXPERIMENT === "1",
-      enableDefensePostDecisions: process.env.OPENFRONT_DEFENSE_POST_EXPERIMENT === "1",
-      enableNavalDecomposedProbe: process.env.OPENFRONT_DECOMPOSED_NAVAL_PROBE === "1",
-      enableNavalDecomposedLive: process.env.OPENFRONT_DECOMPOSED_NAVAL_LIVE === "1",
+      enableDefensePostDecisions:
+        process.env.OPENFRONT_DEFENSE_POST_EXPERIMENT === "1",
+      enableNavalDecomposedProbe:
+        process.env.OPENFRONT_DECOMPOSED_NAVAL_PROBE === "1",
+      enableNavalDecomposedLive:
+        process.env.OPENFRONT_DECOMPOSED_NAVAL_LIVE === "1",
       enableCopilotPlanner: process.env.OPENFRONT_COPILOT_PLANNER === "1",
       log: (record) => appendFile(logfile, JSON.stringify(record) + "\n"),
     });

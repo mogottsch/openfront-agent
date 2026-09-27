@@ -297,6 +297,7 @@ test("missing key does not make a model request", async (t) => {
   for (const path of [
     "/agent.js",
     "/controller.js",
+    "/tribe-focus.js",
     "/observation.js",
     "/game-adapter.js",
   ]) {
