@@ -11,6 +11,7 @@ const { Executor } = await load("src/core/execution/ExecutionManager.ts");
 const { GameRunner } = await load("src/core/GameRunner.ts");
 const { AttackExecution } = await load("src/core/execution/AttackExecution.ts");
 const { NationExecution } = await load("src/core/execution/NationExecution.ts");
+const { TribeExecution } = await load("src/core/execution/TribeExecution.ts");
 const { PlayerExecution } = await load("src/core/execution/PlayerExecution.ts");
 const { createGame } = await load("src/core/game/GameImpl.ts");
 const { GameMapImpl } = await load("src/core/game/GameMap.ts");
@@ -27,11 +28,11 @@ function config(difficulty: string) {
     infiniteTroops: false, instantBuild: false, randomSpawn: false,
     spawnImmunityDuration: 0 }, null, false);
 }
-function setup({ side, opponentType, gameID }: { side: number; opponentType: string; gameID: string }) {
+function setup({ side, opponentType, gameID, difficulty = Difficulty.Impossible }:
+  { side: number; opponentType: string; gameID: string; difficulty?: string }) {
   const meInfo = new PlayerInfo("Human", PlayerType.Human, "human-client", "human");
-  const otherInfo = new PlayerInfo("Passive target", opponentType,
-    opponentType === PlayerType.Bot ? null : null, "other");
-  const cfg = config(Difficulty.Impossible);
+  const otherInfo = new PlayerInfo("Passive target", opponentType, null, "other");
+  const cfg = config(difficulty);
   const main = new GameMapImpl(side, side, new Uint8Array(side * side).fill(128), side * side);
   const mini = new GameMapImpl(side / 2, side / 2,
     new Uint8Array((side * side) / 4).fill(128), (side * side) / 4);
@@ -124,6 +125,86 @@ function tribeFinish() {
   return { initial, partial, final };
 }
 
+// Same native TribeExecution RNG, map, initial player strength and 10-second
+// bot growth/expansion preparation for each branch. Every branch sends 10%
+// first; follow-ups (if any) use 10% or 20% every fourth game second.
+function activeTribeRun(follow: "wait" | "repeat10" | "repeat20",
+  initialHumanTroops: number) {
+  const s = setup({ side: 128, opponentType: PlayerType.Bot,
+    gameID: "active-tribe-001", difficulty: Difficulty.Easy });
+  const { game, human, other: tribe, step, events, cfg } = s;
+  for (let y = 29; y < 79; y++) {
+    for (let x = 20; x < 70; x++) human.conquer(game.ref(x, y));
+    for (let x = 70; x < 90; x++) tribe.conquer(game.ref(x, y));
+  }
+  human.setSpawnTile(game.ref(45, 54));
+  tribe.setSpawnTile(game.ref(80, 54));
+  human.setTroops(initialHumanTroops); // controlled reserve cohort, not a live strategy
+  tribe.setTroops(50000);
+  game.addExecution(new PlayerExecution(human), new PlayerExecution(tribe),
+    new TribeExecution(tribe));
+  const nativeTribeAttacksQueued: any[] = [];
+  const add = game.addExecution.bind(game);
+  game.addExecution = (...executions: any[]) => {
+    for (const e of executions)
+      if (e instanceof AttackExecution && e.owner() === tribe)
+        nativeTribeAttacksQueued.push({ tick: game.ticks(), targetID: e.targetID() });
+    add(...executions); // observation only; preserve engine order/output
+  };
+  for (let i = 0; i < 100; i++) step(); // 10s native tribe growth/counters, no human intents
+  if (!human.isAlive() || !tribe.isAlive() || events.length)
+    throw new Error("Active tribe setup ended before first send");
+  const initial = { tick: game.ticks(), humanTroops: human.troops(),
+    humanCapacity: cfg.maxTroops(human), humanGold: human.gold().toString(),
+    tribeTroops: tribe.troops(), tribeCapacity: cfg.maxTroops(tribe),
+    tribeTiles: tribe.numTilesOwned(), tribeGold: tribe.gold().toString(),
+    tribeOutgoing: tribe.outgoingAttacks().map((a: any) => ({
+      target: a.target().id(), troops: a.troops() })) };
+  const actions: any[] = [];
+  const checkpoints: any[] = [];
+  let liveTicks = 0;
+  for (let i = 0; i < 1200 && !events.length && human.isAlive() && tribe.isAlive(); i++) {
+    const intents: any[] = [];
+    const fraction = i === 0 ? 0.1 : follow === "wait" ? 0 :
+      i % 40 === 0 ? follow === "repeat10" ? 0.1 : 0.2 : 0;
+    if (![0, 0.1, 0.2].includes(fraction)) throw new Error("Out-of-scope bot fraction");
+    if (fraction > 0 && human.sharesBorderWith(tribe) && human.canAttackPlayer(tribe)) {
+      const troops = Math.floor(human.troops() * fraction);
+      if (troops > 0) {
+        intents.push({ type: "attack", clientID: "human-client",
+          targetID: tribe.id(), troops });
+        actions.push({ afterFirstSendTicks: i, fraction,
+          troops, reserveBefore: human.troops(),
+          tribeTilesBefore: tribe.numTilesOwned(),
+          tribeTroopsBefore: tribe.troops(), tribeGoldBefore: tribe.gold().toString() });
+      }
+    }
+    step(intents);
+    liveTicks++;
+    if ([1, 20, 40, 80, 120, 200, 300, 450, 600, 900, 1200].includes(i + 1) ||
+        events.length) checkpoints.push({ afterFirstSendTicks: i + 1,
+      humanReserve: human.troops(), humanGold: human.gold().toString(),
+      humanIncoming: human.incomingAttacks().length,
+      activeHumanAttackOnTribe: human.outgoingAttacks()
+        .filter((a: any) => a.target() === tribe && !a.retreating())
+        .reduce((sum: number, a: any) => sum + a.troops(), 0),
+      tribeTiles: tribe.numTilesOwned(), tribeTroops: tribe.troops(),
+      tribeGold: tribe.gold().toString(),
+      tribeOutgoing: tribe.outgoingAttacks().map((a: any) => ({
+        target: a.target().id(), troops: a.troops() })),
+      conquestEvents: events.length });
+  }
+  const conquest = events.find((e) => e.conquerorId === human.id() &&
+    e.conqueredId === tribe.id()) ?? null;
+  return { follow, initialHumanTroops, initial, actions, checkpoints, liveTicks,
+    nativeTribeAttacksQueued,
+    tribeEliminated: !tribe.isAlive(), conquest,
+    final: { humanAlive: human.isAlive(), humanTiles: human.numTilesOwned(),
+      humanReserve: human.troops(), humanGold: human.gold().toString(),
+      tribeTiles: tribe.numTilesOwned(), tribeTroops: tribe.troops(),
+      tribeGold: tribe.gold().toString() } };
+}
+
 function nationResponse(attacked: boolean) {
   const s = setup({ side: 64, opponentType: PlayerType.Nation,
     gameID: "nation-hostility-mechanics" });
@@ -180,6 +261,9 @@ function nationResponse(attacked: boolean) {
     humanTiles: human.numTilesOwned(), nationTiles: nation.numTilesOwned() };
 }
 const tribe = tribeFinish();
+const activeTribeSweep = [20000, 150000].flatMap((initialTroops) =>
+  (["wait", "repeat10", "repeat20"] as const).map((follow) =>
+    activeTribeRun(follow, initialTroops)));
 const nations = [nationResponse(false), nationResponse(true)];
 const report = {
   engineCommit: execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
@@ -189,12 +273,14 @@ const report = {
     "Nation pair has natural NationExecution attack logic enabled after 55 ticks; all land pre-owned to remove wilderness distraction. Native attack queue observation forwards unmodified Game.addExecution calls.",
     "Only one human attacker in gold trial; partial damage grants no gold until Game.conquerPlayer during target elimination below 100 tiles.",
     "Any AI retaliation depends on reserve ratio, attack timing, geometry, relative strength and other strategies; -100 relation alone does not guarantee a counterattack every tick.",
-  ], tribe, nations,
+    "Active TribeExecution sweep has two separate matched Easy synthetic 128x128 reserve cohorts (initial human 20000 or 150000 internal troops) versus the same prepared native Bot: first 10% send then wait, repeat 10% every 40 ticks, or repeat 20% every 40 ticks; every control is hard-capped at 1200 ticks and <=20% per attack. No model judgment.",
+  ], tribe, activeTribeSweep, nations,
 };
 await mkdir("logs", { recursive: true });
 await writeFile("logs/tribe-gold-nation-hostility.json", JSON.stringify(report, null, 2) + "\n");
 console.log(`Partial tribe gold ${tribe.partial.at(-1).humanGold}, ` +
   `conquest +${tribe.final.event.gold}; nation relation before/after ` +
   `${nations[1].before.relation}/${nations[1].after.relation}, ` +
+  `active tribe kills (low/high × wait/10/20)=${activeTribeSweep.map((r) => Boolean(r.conquest)).join("/")}; ` +
   `native queued attacks ${nations[0].nativeQueued.length}/${nations[1].nativeQueued.length}. ` +
   `Saved ignored logs/tribe-gold-nation-hostility.json`);
