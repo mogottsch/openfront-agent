@@ -104,6 +104,8 @@ const publicFiles = new Map([
   ["/naval-spatial.js", new URL("../web/naval-spatial.js", import.meta.url)],
   ["/naval-adapter.js", new URL("../web/naval-adapter.js", import.meta.url)],
   ["/naval-observation.js", new URL("../web/naval-observation.js", import.meta.url)],
+  ["/defense-observation.js", new URL("../web/defense-observation.js", import.meta.url)],
+  ["/defense-post-adapter.js", new URL("../web/defense-post-adapter.js", import.meta.url)],
 ]);
 
 export function createAgentServer({
@@ -119,6 +121,7 @@ export function createAgentServer({
   minimumIntervalMs = 1000,
   enableHybridDecisions = false,
   enableNavalDecisions = false,
+  enableDefensePostDecisions = false,
   enableNavalDecomposedProbe = false,
   enableNavalDecomposedLive = false,
   requireStartSession = true,
@@ -186,6 +189,7 @@ export function createAgentServer({
         hybridPolicy: HYBRID_POLICY_VERSION,
         hybridEnabled: enableHybridDecisions,
         navalEnabled: enableHybridDecisions && enableNavalDecisions && requireStartSession,
+        defensePostEnabled: enableHybridDecisions && enableDefensePostDecisions && requireStartSession,
         decomposedNavalProbeEnabled: enableHybridDecisions && enableNavalDecisions &&
           enableNavalDecomposedProbe && requireStartSession,
         decomposedNavalLiveEnabled: enableHybridDecisions && enableNavalDecisions &&
@@ -512,6 +516,15 @@ export function createAgentServer({
             !requireStartSession || !authorized || authorized.mode !== "hybrid")) {
         return send(403, { error: "Naval decision endpoint is disabled" });
       }
+      // Defense Post placement is a separate opt-in from City and naval.
+      // Reject before paying TypeSafe; strict proposal validation follows
+      // when the gate is on, and execution remains worker-owned in browser.
+      if (hybrid && supplied && Object.hasOwn(supplied, "defense_post") &&
+          supplied.defense_post !== null &&
+          (!enableDefensePostDecisions || !enableHybridDecisions ||
+            !requireStartSession || !authorized || authorized.mode !== "hybrid")) {
+        return send(403, { error: "Defense Post decisions are disabled" });
+      }
       // A browser may never claim an authoritative Copilot plan. The future
       // planner will inject an independently validated server-owned plan here.
       if (hybrid && supplied?.plan !== null)
@@ -655,6 +668,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       model: process.env.TYPESAFE_MODEL || "jev-latest",
       enableHybridDecisions: process.env.OPENFRONT_HYBRID_EXPERIMENT === "1",
       enableNavalDecisions: process.env.OPENFRONT_NAVAL_EXPERIMENT === "1",
+      enableDefensePostDecisions: process.env.OPENFRONT_DEFENSE_POST_EXPERIMENT === "1",
       enableNavalDecomposedProbe: process.env.OPENFRONT_DECOMPOSED_NAVAL_PROBE === "1",
       enableNavalDecomposedLive: process.env.OPENFRONT_DECOMPOSED_NAVAL_LIVE === "1",
       enableCopilotPlanner: process.env.OPENFRONT_COPILOT_PLANNER === "1",
