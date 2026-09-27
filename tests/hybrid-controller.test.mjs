@@ -540,6 +540,72 @@ test("City affordability is checked anew on later bounded scans", async () => {
   assert.deepEqual(s.sends, [{ kind: "city", id: "solo-1/map@100#1:c1" }]);
 });
 
+test("Hybrid persists an emitted tribe attack as focus after its stack expires", async () => {
+  let decisions = 0;
+  const s = setup({
+    decideHybrid: () => {
+      const first = ++decisions === 1;
+      return {
+        branch: first ? "land_attack" : "wait",
+        kind: first ? "land" : "wait",
+        selected: first ? "attack_player_2_10" : "wait",
+        candidate_id: null,
+        context: {
+          game_id: "solo-1",
+          snapshot_tick: first ? 100 : 110,
+          building_snapshot_id: "solo-1/map@100#1",
+          plan_version: null,
+        },
+      };
+    },
+  });
+  s.adapter.observe = async ({ focusId } = {}) => ({
+    tick: s.status.tick,
+    observation: s.land,
+    focus_status:
+      focusId === null
+        ? null
+        : {
+            status: "available",
+            id: 2,
+            tick: s.status.tick,
+            game_id: "solo-1",
+            player_id: "tribe-2",
+            alive: true,
+            type: "tribe",
+            territory_tiles: 100,
+            relationship: "unallied",
+            adjacent: true,
+            worker_checked: true,
+            can_attack: true,
+            own_reserve_troops: 8000,
+            target_reserve_troops: 1000,
+            reserve_ratio: 8,
+            active_outgoing_count: 0,
+            active_outgoing_troops: 0,
+          },
+  });
+  s.controller.start({ limit: 2 });
+  await setImmediate();
+  assert.deepEqual(
+    s.sends.map((x) => x.kind),
+    ["land"],
+  );
+  assert.equal(s.controller.focusTribeId, 2);
+  s.setTime(1000);
+  s.status.tick = 110;
+  s.timers.shift()();
+  await setImmediate();
+  assert.equal(s.controller.focusTribeId, 2);
+  const second = s.calls.filter((x) => x.kind === "jev").at(-1).input;
+  assert.equal(second.land.tribe_focus.id, 2);
+  assert.equal(second.land.outgoing_attacks.length, 0);
+  assert.deepEqual(
+    s.sends.map((x) => x.kind),
+    ["land"],
+  ); // Jev's wait was honored
+});
+
 test("opt-in Defense Post site is acted on only after exact offered Choice and worker permit", async () => {
   const defense = postProposal();
   const s = setup({

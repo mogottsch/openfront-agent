@@ -4,6 +4,11 @@ import {
   modelState,
   validateObservation,
 } from "./observation.js";
+import {
+  projectTribeFocus,
+  recoverSingleActiveTribe,
+  selectedTribeForFocus,
+} from "./tribe-focus.js";
 
 export class LandController {
   constructor(
@@ -28,6 +33,7 @@ export class LandController {
     this.generation = 0;
     this.busy = false;
     this.nextAllowedStart = 0;
+    this.focusTribeId = null; // persists across Stop/Start in the same game
   }
 
   start({ intervalMs = 1000, limit = 30 } = {}) {
@@ -99,13 +105,37 @@ export class LandController {
         return;
       }
       const observedAt = this.now();
-      const snapshot = await this.adapter.observe();
+      const snapshot = await this.adapter.observe({
+        focusId: this.focusTribeId,
+      });
       if (!isCurrent()) return;
       if (!this.fresh(snapshot.tick, observedAt)) {
         this.onUpdate({ status: "Discarded stale observation" });
         return;
       }
-      const observation = validateObservation(snapshot.observation);
+      const focus = projectTribeFocus(snapshot, this.focusTribeId);
+      if (focus.kind === "unavailable") {
+        this.onUpdate({
+          status: `Tribe focus ${this.focusTribeId} unavailable (${focus.reason}); no paid call`,
+        });
+        return;
+      }
+      if (focus.kind === "conquered") {
+        this.onUpdate({
+          status: `Focused tribe ${this.focusTribeId} confirmed defeated; new targets may be considered`,
+        });
+        this.focusTribeId = null;
+      }
+      const observation = validateObservation(focus.observation);
+      if (this.focusTribeId === null) {
+        const recovered = recoverSingleActiveTribe(observation);
+        if (recovered !== null) {
+          this.focusTribeId = recovered;
+          this.onUpdate({
+            status: `Recorded ongoing attack on tribe ${recovered} as current focus`,
+          });
+        }
+      }
       const actions = buildActions(observation);
       const state = modelState(observation);
       this.onUpdate({ state, actions: actionCriteria(actions) });
@@ -139,10 +169,11 @@ export class LandController {
         if (!this.fresh(snapshot.tick, observedAt))
           outcome = "discarded: state changed";
         else if (!legal) outcome = "discarded: target no longer legal";
-        else
-          outcome = this.adapter.execute(action)
-            ? "land attack intent sent"
-            : "not sent";
+        else if (this.adapter.execute(action)) {
+          outcome = "land attack intent sent";
+          const tribeId = selectedTribeForFocus(action, observation);
+          if (tribeId !== null) this.focusTribeId = tribeId;
+        } else outcome = "not sent";
       }
       if (!isCurrent()) return;
       this.onUpdate({

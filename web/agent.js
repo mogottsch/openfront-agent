@@ -264,7 +264,7 @@ export function mount(connection) {
       $("hybrid").disabled =
         !hybridEnabled || Boolean(activeController?.running);
       $("hybrid-status").textContent = hybridEnabled
-        ? `Hybrid enabled; Copilot ${health?.plannerEnabled ? "on" : "off"}, naval ${health?.navalEnabled && navalAdapter ? "on" : "off"}${health?.decomposedNavalLiveEnabled && navalAdapter ? " (target + per-site size Choices)" : ""}, Defense Post ${health?.defensePostEnabled && defenseAdapter ? "on" : "off"}. City/coast/post scans at most once per 15s.`
+        ? `Hybrid enabled; Copilot ${health?.plannerEnabled ? "on" : "off"}, naval ${health?.navalEnabled && navalAdapter ? "on" : "off"}${health?.decomposedNavalLiveEnabled && navalAdapter ? " (target + per-site size Choices)" : ""}, Defense Post ${health?.defensePostEnabled && defenseAdapter ? "on" : "off"}. City/coast/post scans normally 15s; stranded rechecks sooner.`
         : "Hybrid City experiment disabled in local sidecar (land mode remains available).";
     })
     .catch(() => {
@@ -275,6 +275,11 @@ export function mount(connection) {
   const start = async (controller, mode) => {
     const ticket = ++launchGeneration;
     try {
+      // Both panels act in the SAME match. Carry Moritz's already-selected
+      // unfinished tribe objective across land/Hybrid mode switches, never
+      // infer conquest from Stop or from an exhausted outgoing stack.
+      if (activeController && activeController !== controller)
+        controller.focusTribeId = activeController.focusTribeId;
       activeController?.stop("Switching controller");
       activeController = null;
       closeSession();

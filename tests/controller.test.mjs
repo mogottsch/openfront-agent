@@ -199,6 +199,117 @@ test("a fabricated target, allied target, or unsupported amount stops without ex
   }
 });
 
+test("controller persists Jev's tribe focus after the outgoing stack ends", async () => {
+  let calls = 0;
+  const s = setup({
+    decide: () => ({ action: ++calls === 1 ? "attack_player_2_10" : "wait" }),
+  });
+  s.input.neighbors[0].type = "tribe";
+  s.input.incoming_attacks[0].attacker_type = "tribe";
+  s.adapter.observe = async ({ focusId } = {}) => ({
+    tick: s.status.tick,
+    observation: s.input,
+    focus_status:
+      focusId === null
+        ? null
+        : {
+            status: "available",
+            id: 2,
+            tick: s.status.tick,
+            game_id: "test-game",
+            player_id: "tribe-2",
+            alive: true,
+            type: "tribe",
+            territory_tiles: 100,
+            relationship: "unallied",
+            adjacent: true,
+            worker_checked: true,
+            can_attack: true,
+            own_reserve_troops: 2500,
+            target_reserve_troops: 1000,
+            reserve_ratio: 2.5,
+            active_outgoing_count: 0,
+            active_outgoing_troops: 0,
+          },
+  });
+  s.controller.start({ limit: 2 });
+  await setImmediate();
+  assert.deepEqual(s.sent, [{ target: 2, fraction: 0.1 }]);
+  assert.equal(s.controller.focusTribeId, 2);
+  s.input.outgoing_attacks = []; // one-shot push ended, tribe still alive
+  s.setTime(1000);
+  s.status.tick += 10;
+  s.timers.shift()();
+  await setImmediate();
+  assert.equal(s.controller.focusTribeId, 2);
+  assert.equal(s.observed[1].tribe_focus.id, 2);
+  assert.deepEqual(s.sent, [{ target: 2, fraction: 0.1 }]); // Jev's wait remains wait
+  const second = s.events.filter((x) => x.decision).at(-1).decision;
+  assert.equal(second.observation.strategy.mode, "finish_focused_tribe");
+  assert.equal(second.observation.tribe_focus.our_active_attack_troops, 0);
+});
+
+test("unavailable focus skips paid decision; only authoritative death releases it", async () => {
+  let choices = 0;
+  const s = setup({
+    decide: () => ({
+      action: ++choices === 1 ? "attack_player_2_10" : "attack_wilderness_10",
+    }),
+  });
+  s.input.neighbors[0].type = "tribe";
+  s.input.incoming_attacks[0].attacker_type = "tribe";
+  let focusStatus = "unavailable";
+  s.adapter.observe = async ({ focusId } = {}) => ({
+    tick: s.status.tick,
+    observation: s.input,
+    focus_status:
+      focusId === null
+        ? null
+        : focusStatus === "unavailable"
+          ? {
+              status: "unavailable",
+              id: 2,
+              tick: s.status.tick,
+              reason: "stale_snapshot",
+            }
+          : {
+              status: "dead",
+              id: 2,
+              tick: s.status.tick,
+              game_id: "test-game",
+              player_id: "tribe-2",
+              alive: false,
+              type: "tribe",
+              territory_tiles: 0,
+            },
+  });
+  s.controller.start({ limit: 3 });
+  await setImmediate();
+  assert.equal(s.controller.focusTribeId, 2);
+  s.setTime(1000);
+  s.status.tick += 10;
+  s.timers.shift()();
+  await setImmediate();
+  assert.equal(s.controller.count, 1);
+  assert.equal(s.controller.focusTribeId, 2);
+  assert.match(s.events.at(-1).status, /no paid call/);
+  focusStatus = "dead";
+  s.input.neighbors = s.input.neighbors.filter((n) => n.id !== 2);
+  s.input.border.player_edges -= 5;
+  s.input.border.total_edges -= 5;
+  s.input.incoming_attacks = [];
+  s.setTime(2000);
+  s.status.tick += 10;
+  s.timers.shift()();
+  await setImmediate();
+  assert.equal(s.controller.focusTribeId, null);
+  assert.equal(s.controller.count, 2);
+  assert.deepEqual(s.sent, [
+    { target: 2, fraction: 0.1 },
+    { target: null, fraction: 0.1 },
+  ]);
+});
+
 test("a larger tribe attack returned by a model is rejected, not silently reduced", async () => {
   const s = setup({ action: "attack_player_2_50" });
   s.input.neighbors[0].type = "tribe";

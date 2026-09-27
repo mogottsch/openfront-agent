@@ -3,6 +3,11 @@
 // Build decisions can act only on the currently registered opaque candidate.
 import { LandController } from "./controller.js";
 import {
+  projectTribeFocus,
+  recoverSingleActiveTribe,
+  selectedTribeForFocus,
+} from "./tribe-focus.js";
+import {
   actionCriteria,
   buildActions,
   modelState,
@@ -361,13 +366,37 @@ export class HybridController extends LandController {
       await this.scanDefensePosts(isCurrent);
       if (!isCurrent()) return;
       const observedAt = this.now();
-      const snapshot = await this.adapter.observe();
+      const snapshot = await this.adapter.observe({
+        focusId: this.focusTribeId,
+      });
       if (!isCurrent()) return;
       if (!this.fresh(snapshot.tick, observedAt)) {
         this.onUpdate({ status: "Discarded stale land observation" });
         return;
       }
-      const land = validateObservation(snapshot.observation);
+      const focus = projectTribeFocus(snapshot, this.focusTribeId);
+      if (focus.kind === "unavailable") {
+        this.onUpdate({
+          status: `Tribe focus ${this.focusTribeId} unavailable (${focus.reason}); no paid call`,
+        });
+        return;
+      }
+      if (focus.kind === "conquered") {
+        this.onUpdate({
+          status: `Focused tribe ${this.focusTribeId} confirmed defeated; new targets may be considered`,
+        });
+        this.focusTribeId = null;
+      }
+      const land = validateObservation(focus.observation);
+      if (this.focusTribeId === null) {
+        const recovered = recoverSingleActiveTribe(land);
+        if (recovered !== null) {
+          this.focusTribeId = recovered;
+          this.onUpdate({
+            status: `Recorded ongoing attack on tribe ${recovered} as current focus`,
+          });
+        }
+      }
       const landActions = buildActions(land);
       let activePlan = null;
       if (this.planClient && !this.planAttempted) {
@@ -684,14 +713,17 @@ export class HybridController extends LandController {
           if (!this.fresh(snapshot.tick, observedAt))
             outcome = "discarded: naval snapshot changed";
           else if (!legal) outcome = "discarded: transport no longer legal";
-          else
-            outcome = (await this.navalAdapter.execute(
+          else if (
+            await this.navalAdapter.execute(
               site.candidate_id,
               site.fraction,
               isCurrent,
-            ))
-              ? "transport boat intent sent"
-              : "boat intent not sent";
+            )
+          ) {
+            outcome = "transport boat intent sent";
+            if (site.target_type === "tribe")
+              this.focusTribeId = site.target_owner_id;
+          } else outcome = "boat intent not sent";
         } else if (decision.kind === "land") {
           chosen = offered.land[decision.selected];
           if (!chosen || chosen.kind !== "attack")
@@ -701,10 +733,11 @@ export class HybridController extends LandController {
           if (!this.fresh(snapshot.tick, observedAt))
             outcome = "discarded: land snapshot changed";
           else if (!legal) outcome = "discarded: target no longer legal";
-          else
-            outcome = this.adapter.execute(chosen)
-              ? "land attack intent sent"
-              : "not sent";
+          else if (this.adapter.execute(chosen)) {
+            outcome = "land attack intent sent";
+            const tribeId = selectedTribeForFocus(chosen, land);
+            if (tribeId !== null) this.focusTribeId = tribeId;
+          } else outcome = "not sent";
         } else if (
           decision.kind !== "wait" ||
           !["wait", "save_gold"].includes(decision.selected)
@@ -721,10 +754,11 @@ export class HybridController extends LandController {
           if (!this.fresh(snapshot.tick, observedAt))
             outcome = "discarded: land snapshot changed";
           else if (!legal) outcome = "discarded: target no longer legal";
-          else
-            outcome = this.adapter.execute(chosen)
-              ? "land attack intent sent"
-              : "not sent";
+          else if (this.adapter.execute(chosen)) {
+            outcome = "land attack intent sent";
+            const tribeId = selectedTribeForFocus(chosen, land);
+            if (tribeId !== null) this.focusTribeId = tribeId;
+          } else outcome = "not sent";
         }
       }
       if (!isCurrent()) return;
