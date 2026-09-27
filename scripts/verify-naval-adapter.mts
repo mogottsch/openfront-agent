@@ -8,7 +8,18 @@ import { pathToFileURL } from "node:url";
 import { createNavalAdapter } from "../web/naval-adapter.js";
 import { observeCore } from "./benchmark-jev-observation.mjs";
 import { validateHybridInput } from "../web/hybrid-observation.js";
+import { oneGatedDecomposedDecision } from "./verify-naval-live-client.mjs";
+import { buildNavalDecomposedRequest, parseNavalDecomposedDecision } from "../src/naval-decomposed-policy.mjs";
+import { POLICY_VERSION } from "../src/policy.mjs";
+import { HYBRID_POLICY_VERSION } from "../src/hybrid-policy.mjs";
 
+const args = process.argv.slice(2);
+const mode = args.length === 0 ? "offline" :
+  args.length === 1 && args[0] === "--self-test-live" ? "self-test-live" :
+    args.length === 2 && args.includes("--live-jev") &&
+      args.includes("--max-requests=1") ? "live-jev" : null;
+if (mode === null) throw new Error(
+  "Use no flags for offline mock, --self-test-live for network-free gated test, or --live-jev --max-requests=1 for exactly one paid decision");
 const root = resolve(process.env.OPENFRONT_DIR || "../OpenFrontIO");
 const load = (p: string) => import(pathToFileURL(resolve(root, p)).href);
 const { Config } = await load("src/core/configuration/Config.ts");
@@ -86,16 +97,15 @@ const facade = new Proxy(game, {
 const state = () => ({ ready: !game.inSpawnPhase(), ended: game.getWinner() !== null,
   tick: game.ticks() });
 let queued: any = null;
-const adapter = createNavalAdapter({ game: facade, read: state,
-  transportUnit: UnitType.TransportShip,
-  sendBoat: (dst: number, troops: number) => {
+const sendBoat = (dst: number, troops: number) => {
     if (!state().ready || state().ended || queued !== null ||
         !game.isValidRef(dst) || !Number.isSafeInteger(troops) || troops < 1)
       return false;
     queued = { type: "boat", clientID, dst, troops };
     return true;
-  },
-});
+};
+const adapter = createNavalAdapter({ game: facade, read: state,
+  transportUnit: UnitType.TransportShip, sendBoat });
 async function captureHybrid(navalAdapter = adapter, maxCandidates = 24) {
   const proposal = await navalAdapter.propose({ mapId: "onion", maxCandidates,
     maxCoastTiles: 512, maxPairs: 2048, maxWorkerChecks: 48 });
@@ -135,67 +145,167 @@ if (afterRegrow.troops <= before.troops)
 // bound. A separate adapter instance leaves the original full-11 proposal
 // and its mock-choice permit identity untouched. No candidate truncation.
 const boundedAdapter = createNavalAdapter({ game: facade, read: state,
-  transportUnit: UnitType.TransportShip,
-  sendBoat: () => { throw new Error("Bounded snapshot must not emit an intent"); },
-});
+  transportUnit: UnitType.TransportShip, sendBoat });
 afterRegrow.bounded8 = await captureHybrid(boundedAdapter, 8);
 if (afterRegrow.bounded8.tick !== afterRegrow.tick ||
     afterRegrow.bounded8.proposal.candidates.length !== 8 ||
     afterRegrow.bounded8.proposal.coverage.omitted_count !==
       afterRegrow.proposal.coverage.total_eligible - 8)
   throw new Error("Bounded naval proposal was not generated from the same real game state");
-// EXPLICIT MOCK Choice, not Jev: first worker-checked wilderness candidate
-// from the *fresh* post-regrowth proposal (never the stale tick-449 offer).
-const chosen = afterRegrow.proposal.candidates.find((c: any) => c.target_type === "wilderness");
-if (!chosen) throw new Error("No wilderness candidate in bounded real-engine proposal");
-const fraction = 0.1;
-if (!chosen.worker_source_confirmed || !await adapter.canExecute(chosen.id, fraction) ||
-    !await adapter.execute(chosen.id, fraction))
-  throw new Error("Mock-selected candidate failed adapter legality or intent submission");
-if (queued === null) throw new Error("Adapter returned success without a normal boat intent");
-const emitted = queued;
-const predictedSource = runner.playerBuildables(player.id(),
-  game.x(emitted.dst), game.y(emitted.dst), [UnitType.TransportShip])[0]?.canBuild;
-if (predictedSource === false || predictedSource === undefined)
-  throw new Error("Worker no longer reports the emitted destination buildable");
-afterRegrow.chosenCandidate = chosen;
-afterRegrow.mockChoice = { source: "explicit-mock", candidate_id: chosen.id, fraction };
-afterRegrow.workerSource = { x: game.x(predictedSource), y: game.y(predictedSource) };
-afterRegrow.emitted = { type: emitted.type,
-  dst: { x: game.x(emitted.dst), y: game.y(emitted.dst) }, troops: emitted.troops };
-step([emitted]);
-queued = null;
-const boat = player.units(UnitType.TransportShip).find((u: any) =>
-  u.isActive() && u.targetTile() === emitted.dst);
-if (!boat || boat.tile() !== predictedSource || boat.troops() !== emitted.troops)
-  throw new Error("Normal adapter boat intent did not create expected unit/source/payload");
-let landingTicks: number | null = null;
-for (let i = 1; i <= 500; i++) {
-  step();
-  if (game.ownerID(emitted.dst) === player.smallID()) {
-    landingTicks = i;
-    break;
+async function observeQueuedBoat(record: any) {
+  if (queued === null) throw new Error("Adapter returned success without a normal boat intent");
+  const emitted = queued;
+  const predictedSource = runner.playerBuildables(player.id(),
+    game.x(emitted.dst), game.y(emitted.dst), [UnitType.TransportShip])[0]?.canBuild;
+  if (predictedSource === false || predictedSource === undefined)
+    throw new Error("Worker no longer reports the emitted destination buildable");
+  record.workerSource = { x: game.x(predictedSource), y: game.y(predictedSource) };
+  record.emitted = { type: emitted.type,
+    dst: { x: game.x(emitted.dst), y: game.y(emitted.dst) }, troops: emitted.troops };
+  step([emitted]);
+  queued = null;
+  const boat = player.units(UnitType.TransportShip).find((u: any) =>
+    u.isActive() && u.targetTile() === emitted.dst);
+  if (!boat || boat.tile() !== predictedSource || boat.troops() !== emitted.troops)
+    throw new Error("Normal adapter boat intent did not create expected unit/source/payload");
+  let landingTicks: number | null = null;
+  for (let i = 1; i <= 500; i++) {
+    step();
+    if (game.ownerID(emitted.dst) === player.smallID()) {
+      landingTicks = i;
+      break;
+    }
   }
-}
-if (landingTicks === null || boat.isActive())
-  throw new Error("Mock-chosen boat did not reach and own its shore within 500 ticks");
-step();
-const result = {
-  engineCommit: execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-  scenario: "production Onion, one human, no opponents, fixed land expansion to 6505 island tiles",
-  modelCalls: 0, landSends, before, after_regrow: afterRegrow,
-  after: { tick: game.ticks(), landingTicks,
+  if (landingTicks === null || boat.isActive())
+    throw new Error("Chosen boat did not reach and own its shore within 500 ticks");
+  step();
+  return { tick: game.ticks(), landingTicks,
     landingOwned: game.ownerID(emitted.dst) === player.smallID(),
     unitActive: boat.isActive(), tiles: player.numTilesOwned(),
     outgoingLandAttacks: player.outgoingAttacks().map((a: any) => ({
       target: a.target().id(), source: a.sourceTile(), troops: a.troops(),
-    })) },
+    })) };
+}
+const base = {
+  engineCommit: execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+  scenario: "production Onion, one human, no opponents, fixed land expansion to 6505 island tiles",
+  landSends, before, after_regrow: afterRegrow,
 };
+let result: any;
+let output: string;
+if (mode === "offline") {
+  // Existing explicit MOCK Choice, not Jev. Use the original full-11 adapter
+  // and its current @649#2 ID; the additional bounded8 scan does not alter it.
+  const chosen = afterRegrow.proposal.candidates.find((c: any) => c.target_type === "wilderness");
+  if (!chosen) throw new Error("No wilderness candidate in bounded real-engine proposal");
+  const fraction = 0.1;
+  if (!chosen.worker_source_confirmed || !await adapter.canExecute(chosen.id, fraction) ||
+      !await adapter.execute(chosen.id, fraction))
+    throw new Error("Mock-selected candidate failed adapter legality or intent submission");
+  afterRegrow.chosenCandidate = chosen;
+  afterRegrow.mockChoice = { source: "explicit-mock", candidate_id: chosen.id, fraction };
+  const after = await observeQueuedBoat(afterRegrow);
+  result = { ...base, modelCalls: 0, after };
+  output = "logs/naval-adapter-engine.json";
+  console.log(`Island reserve ${before.land_observation.self.troops} -> ` +
+    `${afterRegrow.land_observation.self.troops} displayed after ${regrowTicks} no-intent ticks. ` +
+    `Mock naval candidate ${chosen.id}: worker source ` +
+    `(${afterRegrow.workerSource.x},${afterRegrow.workerSource.y}), ` +
+    `normal boat ${afterRegrow.emitted.troops} troops landed in ${after.landingTicks} ticks`);
+} else {
+  // One paused decision only. Self-test uses a local in-process fake transport;
+  // --live-jev is the sole path that may contact the loopback sidecar.
+  const input = afterRegrow.bounded8.hybrid_input;
+  const fakeFetch = mode === "self-test-live" ? makeOfflineFakeFetch(input) : fetch;
+  let live: any;
+  let receivedDecision: any = null;
+  try {
+    const response = await oneGatedDecomposedDecision(input, { fetchImpl: fakeFetch });
+    const decision = response.decision;
+    receivedDecision = decision;
+    live = { status: "decision-received", mode, decision,
+      requestCount: response.requestCount, sessionRevoked: response.sessionRevoked,
+      policy: response.policy, emitted: null, after: null };
+    if (game.ticks() !== input.snapshot_tick || queued !== null)
+      throw new Error("Paused engine tick changed during decision");
+    if (decision.kind === "boat") {
+      const candidate = afterRegrow.bounded8.proposal.candidates.find((c: any) =>
+        c.id === decision.candidate_id);
+      if (!candidate || !await boundedAdapter.canExecute(decision.candidate_id, decision.fraction) ||
+          !await boundedAdapter.execute(decision.candidate_id, decision.fraction))
+        throw new Error("Model-selected boat failed fresh adapter legality");
+      live.selectedCandidate = candidate;
+      live.after = await observeQueuedBoat(live);
+      live.status = mode === "live-jev" ? "jev-boat-landed" : "mock-boat-landed";
+    } else if (decision.kind === "wait") {
+      if (queued !== null) throw new Error("Wait unexpectedly queued an intent");
+      step(); // one empty turn; existing game executions may still progress
+      live.status = mode === "live-jev" ? "jev-wait-no-intent" : "mock-wait-no-intent";
+      live.after = { tick: game.ticks(), boats: player.units(UnitType.TransportShip).length,
+        tiles: player.numTilesOwned() };
+    } else {
+      // This narrow naval study cannot execute land/City choices. No substitute
+      // attack is sent and the unsupported branch remains visible in the report.
+      live.status = "unsupported-choice-kind-no-intent";
+    }
+  } catch (error: any) {
+    const emitted = queued !== null || Boolean(live?.emitted);
+    live = { status: emitted ? "failed-after-intent" : "failed-no-intent", mode,
+      decision: receivedDecision,
+      error: /^Local decomposed decision HTTP \d+$/.test(error?.message)
+        ? error.message : "Paused decomposed test failed or timed out",
+      intentEmitted: emitted };
+    process.exitCode = 2;
+  }
+  result = { ...base, mode: "paused-single-decision-not-live-paced-play",
+    actualModelResponses: mode === "live-jev" && receivedDecision ? 1 : 0,
+    paidCallsVerified: null, live_jev: live };
+  output = mode === "live-jev" ? "logs/naval-adapter-live-jev.json" :
+    "logs/naval-adapter-live-selftest.json";
+  console.log(`${mode}: ${live.status}; ` +
+    `${live.emitted ? `boat ${live.emitted.troops} internal troops` : "no emitted boat"}`);
+}
 await mkdir("logs", { recursive: true });
-await writeFile("logs/naval-adapter-engine.json", JSON.stringify(result, null, 2) + "\n");
-console.log(`Island reserve ${before.land_observation.self.troops} -> ` +
-  `${afterRegrow.land_observation.self.troops} displayed after ${regrowTicks} no-intent ticks. ` +
-  `Mock naval candidate ${chosen.id}: worker source ` +
-  `(${afterRegrow.workerSource.x},${afterRegrow.workerSource.y}), ` +
-  `normal boat ${afterRegrow.emitted.troops} troops landed in ${landingTicks} ticks; ` +
-  `ignored logs/naval-adapter-engine.json`);
+await writeFile(output, JSON.stringify(result, null, 2) + "\n");
+console.log(`Saved ignored ${output}`);
+
+function makeOfflineFakeFetch(input: any) {
+  const token = "M".repeat(32); // fake test-only token, never sent to a service
+  return async (url: string, init: any) => {
+    if (url.endsWith("/health")) return { ok: true, json: async () => ({
+      keyConfigured: true, requiresStart: true, sessionActive: false,
+      hybridEnabled: true, navalEnabled: true, decomposedNavalLiveEnabled: true,
+      plannerEnabled: false, policy: POLICY_VERSION,
+      hybridPolicy: HYBRID_POLICY_VERSION,
+    }) };
+    if (url.endsWith("/session") && init.method === "POST") {
+      if (JSON.parse(init.body).mode !== "hybrid" || JSON.parse(init.body).limit !== 1)
+        throw new Error("Fake Start contract mismatch");
+      return { ok: true, json: async () => ({ token, mode: "hybrid",
+        limit: 1, plan_limit: 0 }) };
+    }
+    if (url.endsWith("/session") && init.method === "DELETE") {
+      if (init.headers["X-Agent-Session"] !== token) throw new Error("Fake Stop token mismatch");
+      return { ok: true };
+    }
+    if (url.endsWith("/hybrid-decision-decomposed")) {
+      if (init.headers["X-Agent-Session"] !== token ||
+          JSON.stringify(JSON.parse(init.body)) !== JSON.stringify(input))
+        throw new Error("Fake decision request mismatch");
+      const request = buildNavalDecomposedRequest(input);
+      const answers = Object.fromEntries(Object.entries(request.questions).map(([name, q]: any) => {
+        const choice = name === "branch" ? "boat_attack" :
+          name === "boat_target" ? "boat_target_1" :
+            name === "boat_size_1" ? "send_10" : "wait";
+        return [name, { type: "choice", choice, confidence: 1,
+          probabilities: Object.fromEntries(Object.keys(q.criteria).map((id) =>
+            [id, id === choice ? 1 : 0])) }];
+      }));
+      return { ok: true, json: async () => ({
+        ...parseNavalDecomposedDecision({ answers, model: "explicit-test-only", usage: {} }, request),
+        latencyMs: 1,
+      }) };
+    }
+    throw new Error("Unexpected fake local route");
+  };
+}

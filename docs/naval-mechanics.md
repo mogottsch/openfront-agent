@@ -44,6 +44,21 @@ After 200 additional **no-human-intent** ticks from the completed island, the ve
 
 A separate **probe-only** TypeSafe request split the boat judgment into a target Choice plus one speculative, target-specific size Choice per candidate; code still honors wait at any level. With revised island-specific guidance, a real Jev call on the same genuine regrown full11 snapshot chose <strong>boat branch → coast8 → 10%</strong> (13,545 input tokens, 1,477ms). The exact genuine pre-regrowth snapshot (961/48,813 troops and an existing outgoing wilderness stack) instead chose wait (13,429 tokens, 1,145ms). An independent actual-engine bounded8 shortlist at the regrown tick chose branch wait while its speculative target Choice favored nearest coast1 at 0.94 (10,230 tokens, 921ms); that wait was honored. No probe emitted an intent or advanced gameplay. Those three stochastic decisions do not establish improvement over the flat request, because prompt wording and candidate counts also changed. Ignored evidence: `logs/naval-decomposed-{full11,before,bounded8}-probe.json` (real model replies), and the independently reproduced source snapshots under `logs/naval-adapter-engine.json`.
 
+## Optional single-decision, paused-engine Jev route — not live-paced play
+
+`verify-naval-adapter.mts` remains network-free with **no flags**. A separate opt-in command supports exactly one real Jev decision only when the already-running local sidecar is configured for hybrid/naval/decomposed-live and has **no active Start session or Copilot planner**:
+
+```sh
+# Network-free harness test: fake local response, genuine engine legality and landing.
+../OpenFrontIO/node_modules/.bin/tsx --tsconfig ../OpenFrontIO/tsconfig.json scripts/verify-naval-adapter.mts --self-test-live
+
+# Do NOT run without explicit paid-call approval; exactly one authenticated
+# local /hybrid-decision-decomposed request, never a direct TypeSafe call.
+../OpenFrontIO/node_modules/.bin/tsx --tsconfig ../OpenFrontIO/tsconfig.json scripts/verify-naval-adapter.mts --live-jev --max-requests=1
+```
+
+The command refuses a missing/other cap or a disabled/busy sidecar. It checks `/health` flags and exact policy versions, POSTs `/session` `{mode:"hybrid",limit:1}`, sends the **genuine `after_regrow.bounded8.hybrid_input`** to `/hybrid-decision-decomposed` with `X-Agent-Session`, and always attempts DELETE `/session` on reply, HTTP error, timeout or malformed choice. The token stays closure-local and is never written to the ignored result. Parsed per-question answers, branch, selected target/size and game/naval IDs must match the exact offered options and same paused tick. If Jev selects a boat, the script uses the **bounded8 adapter's** `canExecute`/`execute` with its opaque candidate ID and fraction, then one normal stamped boat intent, observing unit payload and landing separately. Jev wait emits **no human intent**. Land/City choices are not executed by this narrow naval test and are reported as unsupported, not silently converted into a boat. Network errors, rejected legality and revocation failure are not results or wins. Reports use ignored `logs/naval-adapter-live-jev.json` or `logs/naval-adapter-live-selftest.json`; the self-test is labelled `mock-*`, never a paid Jev decision. This is a **paused single-decision controlled engine test with no native AI opponent**: even a model-selected boat and observed landing would not establish live 1 Hz gameplay or a match win. No real call has been made by this script as part of these checks.
+
 ## Engine contract and actual constraints
 
 1. **Intent shape:** `src/core/Schemas.ts:630-635` defines `boat` with a nonnegative integer **destination tile ref** `dst` and nonnegative numeric `troops`. `src/core/execution/ExecutionManager.ts:83-84` maps the stamped intent to `TransportShipExecution(player, dst, troops)`. The sender's `clientID` is stamped by the local/server turn pipeline; the intent does **not** provide a target player ID, source shore, route, or percentage.
