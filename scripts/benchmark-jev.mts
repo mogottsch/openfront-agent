@@ -1,11 +1,11 @@
-// Optional real-engine v4.1 evaluation. --mock makes no API calls; --live is
+// Optional real-engine land-policy evaluation. --mock makes no API calls; --live is
 // explicit and calls ONLY the already-running loopback Jev sidecar /decision.
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { actionCriteria, buildActions } from "../web/observation.js";
 import { POLICY_VERSION } from "../src/policy.mjs";
-import { runBenchmarkMatch, type Options } from "./benchmark-baseline.mts";
+import { benchmarkDifficulties, runBenchmarkMatch, type Options } from "./benchmark-baseline.mts";
 import {
   createPacedDecisionClient,
   createTickPacer,
@@ -23,6 +23,7 @@ function integer(s: string, flag: string, max: number) {
 function args(argv: string[]) {
   let mode: "mock" | "live" | null = null;
   let seed = "bench-001";
+  let difficulty = "Impossible";
   let maxCalls = 2;
   let maxTicks = 30;
   let minutes = 5;
@@ -42,6 +43,11 @@ function args(argv: string[]) {
         seed = next();
         if (!/^[A-Za-z0-9_-]{1,64}$/.test(seed)) throw new Error("invalid seed");
         break;
+      case "--difficulty":
+        difficulty = next();
+        if (!benchmarkDifficulties.includes(difficulty))
+          throw new Error(`--difficulty must be ${benchmarkDifficulties.join(" | ")}`);
+        break;
       case "--max-calls": maxCalls = integer(next(), flag, 300); break;
       case "--max-ticks": maxTicks = integer(next(), flag, 73000); break;
       case "--minutes": minutes = integer(next(), flag, 120); break;
@@ -53,7 +59,7 @@ function args(argv: string[]) {
     }
   }
   if (mode === null) throw new Error("explicit --mock or --live required; no default model calls");
-  return { mode, seed, maxCalls, maxTicks, minutes, output };
+  return { mode, seed, difficulty, maxCalls, maxTicks, minutes, output };
 }
 
 const cli = args(process.argv.slice(2));
@@ -78,6 +84,7 @@ const opts: Options = {
   maxTicks: cli.maxTicks,
   spawn: [400, 280],
   output: cli.output,
+  difficulty: cli.difficulty,
 };
 let totalCalls = 0; // attempted local /decision requests; not verified paid calls
 let successfulResponses = 0;
@@ -180,7 +187,7 @@ const report = {
   mode: cli.mode,
   sidecar: cli.mode === "live" ? { model: sidecar.model, policy: sidecar.policy,
     sessionRevoked: sessionStopError === null, sessionStopError } : null,
-  config: { seed: cli.seed, map: "Onion", difficulty: "Impossible",
+  config: { seed: cli.seed, map: "Onion", difficulty: cli.difficulty,
     timerMinutes: cli.minutes, maxLiveTicks: cli.maxTicks, maxCalls: cli.maxCalls,
     tickPacingMs: 100, requestStartSpacingMs: 1000, sidecarTimeoutMs: 6500 },
   calls: { sidecar: cli.mode === "live" ? totalCalls : 0,

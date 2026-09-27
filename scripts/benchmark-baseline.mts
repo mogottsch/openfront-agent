@@ -1,4 +1,4 @@
-// Paired headless matches against OpenFront's native Impossible nation AI.
+// Paired headless matches against OpenFront's native nation AI (Easy–Impossible).
 // This is an offline deterministic-control benchmark, never a Jev controller.
 // Run with the sibling checkout's tsx, as in scripts/analyze-opening.mts.
 import { execFileSync } from "node:child_process";
@@ -31,6 +31,9 @@ function freshMap(metadata: any, data: Uint8Array) {
   return new GameMapImpl(metadata.width, metadata.height, new Uint8Array(data), metadata.num_land_tiles);
 }
 
+export const benchmarkDifficulties = Object.freeze([
+  Difficulty.Easy, Difficulty.Medium, Difficulty.Hard, Difficulty.Impossible,
+]);
 const policies = ["fixed20-wilderness", "fixed50-land"] as const;
 type Policy = (typeof policies)[number];
 export type Options = {
@@ -40,6 +43,7 @@ export type Options = {
   maxTicks: number;
   spawn: [number, number];
   output: string;
+  difficulty?: string; // omitted by older callers -> original Impossible behavior
 };
 
 function positiveInt(value: string, flag: string): number {
@@ -57,6 +61,7 @@ function parseArgs(args: string[]): Options {
   let maxTicks: number | undefined;
   let spawn: [number, number] = [400, 280];
   let output = "logs/benchmark-baseline.json";
+  let difficulty = Difficulty.Impossible;
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
     const next = () => {
@@ -76,6 +81,11 @@ function parseArgs(args: string[]): Options {
         ) {
           throw new Error("--seeds requires distinct alphanumeric/hyphen/underscore IDs");
         }
+        break;
+      case "--difficulty":
+        difficulty = next();
+        if (!benchmarkDifficulties.includes(difficulty))
+          throw new Error(`--difficulty must be ${benchmarkDifficulties.join(" | ")}`);
         break;
       case "--minutes":
         minutes = positiveInt(next(), flag);
@@ -109,6 +119,7 @@ function parseArgs(args: string[]): Options {
     maxTicks: maxTicks ?? (smoke ? 70 : minutes * 600 + 50),
     spawn,
     output,
+    difficulty,
   };
 }
 
@@ -141,6 +152,9 @@ export async function runBenchmarkMatch(
   seed: string, policy: Policy | "jev-v4.1", opts: Options, hooks: BenchmarkHooks = {},
 ) {
   const clientID = "benchmark-human";
+  const difficulty = opts.difficulty ?? Difficulty.Impossible;
+  if (!benchmarkDifficulties.includes(difficulty))
+    throw new Error(`Unknown native nation difficulty: ${difficulty}`);
   const gameStart = {
     gameID: seed,
     lobbyCreatedAt: 0,
@@ -149,7 +163,7 @@ export async function runBenchmarkMatch(
       gameMapSize: GameMapSize.Normal,
       gameMode: GameMode.FFA,
       gameType: GameType.Singleplayer,
-      difficulty: Difficulty.Impossible,
+      difficulty,
       nations: "default" as const,
       bots: 0,
       donateGold: false,
@@ -332,7 +346,7 @@ export async function runBenchmarkMatch(
     UnitType.MissileSilo, UnitType.SAMLauncher,
   ];
   return {
-    seed, policy, spawn: { x, y }, opponentSpawns,
+    seed, policy, difficulty, spawn: { x, y }, opponentSpawns,
     completed,
     status: completed ? "engine-win" : stoppedReason ?? "censored-tick-cap",
     win: completed ? winner === human : null,
@@ -397,7 +411,8 @@ const report = {
   schemaVersion: 1,
   engineCommit,
   map: "Onion",
-  config: { difficulty: "Impossible", nationCount: results[0].opponentSpawns.length,
+  config: { difficulty: opts.difficulty ?? Difficulty.Impossible,
+    nationCount: results[0].opponentSpawns.length,
     gameType: "Singleplayer", gameMode: "FFA", timerMinutes: opts.minutes,
     spawn: { x: opts.spawn[0], y: opts.spawn[1] }, maxLiveTicks: opts.maxTicks },
   policies: {
