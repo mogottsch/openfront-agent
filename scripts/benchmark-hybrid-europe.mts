@@ -14,10 +14,10 @@ import { projectTribeFocus, recoverSingleActiveTribe, recordTribeLandIntent,
 import { validateHybridInput } from "../web/hybrid-observation.js";
 import { buildHybridRequest, parseHybridDecision, HYBRID_POLICY_VERSION,
 } from "../src/hybrid-policy.mjs";
-import { POLICY_VERSION } from "../src/policy.mjs";
+import { POLICY_VERSION, buildRequest as buildLandRequest, parseDecision } from "../src/policy.mjs";
 import { createTickPacer, createPacedDecisionClient, timedWinCheckBoundary,
 } from "./benchmark-jev-observation.mjs";
-import { createFocusedEuropeWorld, observeFocusedCore, parseFocusedEuropeArgs,
+import { createFocusedEuropeWorld, observeFocusedCore, parseFocusedEuropeArgs, StaleSubmissionError,
 } from "./benchmark-focused-europe.mts";
 
 export function parseHybridEuropeArgs(argv) {
@@ -288,7 +288,39 @@ function mockLoopReply(request, control) {
   return parseHybridDecision({ answers, model: `explicit-mock-${control}` }, request);
 }
 
-// Explicit bounded flat loop: every offered land/City/wait branch is supported.
+// Inference routing happens BEFORE any answer. A City-less snapshot uses the
+// same single land Choice as the browser, not an extra hybrid branch veto.
+export function routeLandCityRequest(input) {
+  const clean = validateHybridInput(input);
+  if (clean.building?.candidates.length) return { mode: "hybrid", endpoint: "/hybrid-decision",
+    payload: clean, request: buildHybridRequest(clean), response_type: "hybrid-branch" };
+  return { mode: "land", endpoint: "/decision", payload: clean.land,
+    request: buildLandRequest(clean.land), response_type: "land-choice" };
+}
+
+export function validateRoutedReply(reply, route) {
+  if (route.mode === "land") {
+    const parsed = parseDecision({ model: reply?.model, usage: reply?.usage,
+      answers: { action: { type: "choice", choice: reply?.action,
+        confidence: reply?.confidence, probabilities: reply?.probabilities } } },
+    route.request.questions.action.criteria);
+    return { validated: parsed, execution: { kind: parsed.action === "wait" ? "wait" : "land",
+      selected: parsed.action, candidate_id: null, fraction: null } };
+  }
+  const parsed = validateCitySeamDecision(reply, { request: route.request });
+  return { validated: parsed, execution: parsed };
+}
+
+function mockLandReply(request, control) {
+  const criteria = request.questions.action.criteria;
+  const action = control === "wait-city" ? "wait" :
+    Object.keys(criteria).find((key) => key !== "wait") ?? "wait";
+  return { action, confidence: 1, probabilities: Object.fromEntries(
+    Object.keys(criteria).map((key) => [key, key === action ? 1 : 0])),
+  model: `explicit-mock-${control}` };
+}
+
+// Explicit bounded loop: every actually offered land/City/wait is supported.
 // Transport/Post/upgrades/diplomacy are absent, not silently mishandled.
 export async function runHybridEuropeLoop(options, {
   worldFactory = createFocusedEuropeWorld, fetchImpl = fetch,
@@ -318,6 +350,7 @@ export async function runHybridEuropeLoop(options, {
   let nextScanTick = -Infinity, wasAffordable = false;
   let status = "censored-tick-cap", phase = "start", error = null;
   const records = [], submitted = [], cityEvents = [], scans = [], requestStarts = [];
+  let pendingRoute = null, pendingFresh = null, pendingRecord = null, staleBeforeSend = false;
   const before = { tick: game.ticks(), gold: human.gold().toString(),
     troops_internal: human.troops(), tiles: human.numTilesOwned(),
     troop_capacity_internal: config.maxTroops(human), cities: cityInventory(world) };
@@ -338,17 +371,31 @@ export async function runHybridEuropeLoop(options, {
       started = true;
     }
     const transport = async (_url, init) => {
-      // Reuse the shared one-second, single-flight request client, adapting
-      // ONLY its land endpoint/response envelope to the flat hybrid protocol.
-      const input = JSON.parse(init.body);
-      if (options.mode === "mock") {
-        const d = mockLoopReply(buildHybridRequest(input), options.mockChoice ?? "first-offered");
-        return { ok: true, json: async () => ({ action: d.selected, hybrid_response: d }) };
+      // Shared request pacing may wait AFTER capture. Recheck BEFORE sending,
+      // and count only a real transport attempt, never a stale queued request.
+      if (!pendingRoute || !pendingFresh?.()) {
+        staleBeforeSend = true;
+        throw new Error("Captured payload became stale before inference");
       }
-      const response = await fetchImpl(`${BASE}/hybrid-decision`, init);
+      attempts++;
+      pendingRecord.decision_attempted = true;
+      pendingRecord.transport_started_at_ms = now();
+      if (options.mode === "mock") {
+        const control = options.mockChoice ?? "first-offered";
+        const d = pendingRoute.mode === "land" ? mockLandReply(pendingRoute.request, control) :
+          mockLoopReply(pendingRoute.request, control);
+        pendingRecord.model_reply = d;
+        return { ok: true, json: async () => ({ action: pendingRoute.mode === "land" ? d.action : d.selected,
+          routed_response: d }) };
+      }
+      // Body remains the exact preselected raw-land or hybrid payload; no
+      // post-answer promotion of speculative answers or endpoint retry.
+      const response = await fetchImpl(`${BASE}${pendingRoute.endpoint}`, init);
       if (!response.ok) return response;
       const d = await response.json();
-      return { ok: true, json: async () => ({ action: d?.selected, hybrid_response: d }) };
+      pendingRecord.model_reply = d; // retain even if shared client rejects malformed action
+      return { ok: true, json: async () => ({ action: pendingRoute.mode === "land" ? d?.action : d?.selected,
+        routed_response: d }) };
     };
     const ask = createPacedDecisionClient({ fetchImpl: transport, baseUrl: BASE,
       now, sleep, sessionHeaders: () => options.mode === "live" ? { "X-Agent-Session": token } : {} });
@@ -405,52 +452,71 @@ export async function runHybridEuropeLoop(options, {
             land: projected.observation, building: currentCity, plan: null,
             city_mechanics: { troop_capacity_gain_display: config.cityTroopIncrease() / 10,
               construction_ticks: config.unitInfo(world.UnitType.City).constructionDuration } });
-          const request = buildHybridRequest(input);
-          const payloadCapturedAt = currentCity ? Math.min(capturedAt, proposalCapturedAt) : capturedAt;
+          const route = routeLandCityRequest(input);
+          const request = route.request;
+          const payloadCapturedAt = route.mode === "hybrid" ? Math.min(capturedAt, proposalCapturedAt) : capturedAt;
           const dispatchFresh = () => {
             const state = world.read();
             const age = now() - payloadCapturedAt;
             return age >= 0 && age <= 2000 && state.ready && !state.ended &&
               state.tick === input.snapshot_tick && game.ticks() === input.snapshot_tick &&
-              (!currentCity || input.snapshot_tick - currentCity.source_tick <= 20);
+              (route.mode !== "hybrid" || input.snapshot_tick - currentCity.source_tick <= 20);
           };
           const canDispatch = () => isCurrent() && dispatchFresh();
           envelope.setDispatchGuard(canDispatch);
           const landIdentities = new Map(input.land.neighbors.map((p) =>
             [p.id, game.playerBySmallID(p.id).id()]));
           const record = { tick: snapshot.tick, captured_at_ms: payloadCapturedAt,
-            input, offered_request: request,
+            input, inference_route: route.endpoint, model_reply_type: route.response_type,
+            request_payload: route.payload, offered_request: request,
+            decision_attempted: false, normal_intent_queued: false,
             city_scan: !affordable ? "unaffordable-real-core-preflight" :
               currentCity ? "current-worker-proposal" : "proposal-expired-no-current-city-option" };
-          if (Object.keys(request.questions.branch.criteria).length === 1) {
+          const waitOnly = route.mode === "land" ?
+            Object.keys(request.questions.action.criteria).length === 1 :
+            Object.keys(request.questions.branch.criteria).length === 1;
+          if (waitOnly) {
             record.call = "wait-only-no-request";
             records.push(record);
           } else {
             if (attempts >= options.maxCalls) { status = "censored-call-cap"; break; }
-            attempts++;
+            if (!canDispatch()) {
+              status = isCurrent() ? "censored-stale" : "canceled-or-stale";
+              records.push({ ...record, call: "not-sent-stale", age_at_dispatch_ms: now() - payloadCapturedAt });
+              break;
+            }
             phase = "decision";
+            pendingRoute = route;
+            pendingFresh = canDispatch;
+            pendingRecord = record;
+            staleBeforeSend = false;
             let response;
             try {
-              response = await ask(input);
+              response = await ask(route.payload);
               responses++;
               requestStarts.push(response.startedAtMs);
               record.request_started_at_ms = response.startedAtMs;
               record.latency_ms = response.latencyMs;
             } catch {
-              status = "censored-decision-error";
-              records.push({ ...record, call: options.mode, error: "Decision failed/timed out; no retry" });
+              const received = Object.hasOwn(record, "model_reply");
+              status = staleBeforeSend ? isCurrent() ? "censored-stale" : "canceled-or-stale" :
+                received ? "censored-invalid-choice" : "censored-decision-error";
+              records.push({ ...record, call: staleBeforeSend ? "not-sent-stale" : options.mode,
+                error: staleBeforeSend ? "Payload stale before inference; no request or timestamp refresh" :
+                  received ? "Malformed local reply; no retry or substitute" : "Decision failed/timed out; no retry" });
               break;
             }
             // Retain the normalized local reply BEFORE revalidation or
             // dispatch. A returned City choice must not be relabeled as an
             // accepted build if the subsequent worker/tick/gold check fails.
             record.call = options.mode;
-            record.model_reply = response.decision.hybrid_response;
+            record.model_reply = response.decision.routed_response;
             record.normal_intent_queued = false;
             records.push(record);
             phase = "validate-choice";
-            const decision = validateCitySeamDecision(record.model_reply, { request });
-            record.validated_choice = decision;
+            const validation = validateRoutedReply(record.model_reply, route);
+            const decision = validation.execution;
+            record.validated_choice = validation.validated;
             if (!isCurrent()) { status = "canceled-or-stale"; break; }
             if (!dispatchFresh()) {
               record.age_at_dispatch_ms = now() - payloadCapturedAt;
@@ -462,6 +528,7 @@ export async function runHybridEuropeLoop(options, {
               record.age_at_dispatch_ms = now() - payloadCapturedAt;
               if (!canDispatch()) { status = isCurrent() ? "censored-stale" : "canceled-or-stale"; break; }
               const sent = legal && await envelope.city.execute(decision.candidate_id, canDispatch);
+              record.normal_intent_queued = envelope.queued.length === 1;
               record.age_at_dispatch_ms = now() - payloadCapturedAt;
               if (!canDispatch()) { status = isCurrent() ? "censored-stale" : "canceled-or-stale"; break; }
               if (!sent) throw new Error("Selected City failed fresh legality; no substitute");
@@ -492,7 +559,10 @@ export async function runHybridEuropeLoop(options, {
       }
       phase = "tick";
       const intents = envelope.queued.splice(0);
-      await world.step(intents);
+      await world.step(intents, () => {
+        if (pendingRecord) pendingRecord.age_at_submission_ms = now() - pendingRecord.captured_at_ms;
+        return pendingFresh?.() === true;
+      });
       ticks++;
       submitted.push(...intents.map((intent) => ({ ...intent, submitted_tick: game.ticks() })));
       // Counts are promoted ONLY after normal turn submission succeeds. The
@@ -527,9 +597,12 @@ export async function runHybridEuropeLoop(options, {
     if (events.winEvents > 1 || (events.winEvents === 1 && !game.getWinner()))
       throw new Error("Inconsistent engine Win event");
     if (events.winEvents === 1) status = "engine-win";
-  } catch {
-    error = { phase, message: "Hybrid run failed closed; no retry or substitute" };
-    status = phase === "decision" ? "censored-decision-error" :
+  } catch (failure) {
+    error = { phase, message: failure instanceof StaleSubmissionError ?
+      "Native turn guard rejected stale queued intent; no addTurn or executeNextTick" :
+      "Hybrid run failed closed; no retry or substitute" };
+    status = failure instanceof StaleSubmissionError ? "censored-stale" :
+      phase === "decision" ? "censored-decision-error" :
       ["validate-choice", "execute"].includes(phase) ? "censored-invalid-choice" : "censored-runtime-error";
   } finally {
     if (token) {
@@ -550,7 +623,7 @@ export async function runHybridEuropeLoop(options, {
     type: p.type(), alive: p.isAlive(), tiles: p.numTilesOwned(),
     troops_internal: p.troops(), gold: p.gold().toString(),
     troop_capacity_internal: config.maxTroops(p) })).sort((a, b) => b.tiles - a.tiles);
-  return { schema_version: 1, stage: "flat-land-city-loop", mode: options.mode,
+  return { schema_version: 2, stage: "routed-land-city-loop", mode: options.mode,
     policy: POLICY_VERSION, hybrid_policy: HYBRID_POLICY_VERSION, metadata: world.metadata,
     config: { seed: options.seed, max_calls: options.maxCalls, max_ticks: options.maxTicks,
       timer_minutes: options.minutes, tick_spacing_ms: 100, request_spacing_ms: 1000,
@@ -559,6 +632,7 @@ export async function runHybridEuropeLoop(options, {
       city_heavy_scan_ticks: 150, city_absent_scan_ticks: 50,
       actual_core_cost_preflight: true, custom_starting_gold: false,
       mock_choice: options.mode === "mock" ? options.mockChoice ?? "first-offered" : null,
+      inference_router: "fresh-city-hybrid-otherwise-direct-land-v1",
       navy_enabled: false, posts_enabled: false, planner_enabled: false },
     status, error, complete, win: winner ? winner === human : null,
     human_eliminated_before_win: !human.isAlive() && !complete,
@@ -572,6 +646,7 @@ export async function runHybridEuropeLoop(options, {
     counts: { mock_requests: options.mode === "mock" ? attempts : 0,
       local_decision_attempts: options.mode === "live" ? attempts : 0,
       successful_local_responses: options.mode === "live" ? responses : 0,
+      received_local_json_responses: options.mode === "live" ? records.filter((r) => Object.hasOwn(r, "model_reply")).length : 0,
       paid_calls_not_verified_here: true, human_tribe_conquests: conquests.length },
     session: { started, revoked, stop_error: stopError }, before,
     after: { tick: game.ticks(), seconds: game.elapsedGameSeconds(), live_ticks: ticks,
@@ -600,7 +675,7 @@ async function main() {
   } finally { process.off("SIGINT", stop); }
   await mkdir(dirname(resolve(options.output)), { recursive: true });
   await writeFile(options.output, JSON.stringify(report, null, 2) + "\n");
-  console.log(`${loop ? `${options.mode} flat land+City loop` : "Offline City seam"}: ` +
+  console.log(`${loop ? `${options.mode} routed land+City loop` : "Offline City seam"}: ` +
     `${report.submitted_normal_intents.length} normal intents, ` +
     `${report.after.cities.length} observed owned Cities; ${report.status}; ${options.output}`);
   if (report.session?.stop_error || report.status.includes("error") ||

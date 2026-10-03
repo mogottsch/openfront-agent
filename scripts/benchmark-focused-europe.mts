@@ -17,6 +17,25 @@ const NATION_NAMES = ["England", "Spain", "Switzerland"];
 const HUMAN_SPAWN = [543, 491];
 const BASE_URL = "http://127.0.0.1:8788";
 
+export class StaleSubmissionError extends Error {
+  constructor() { super("Captured intent stale at native turn submission"); this.name = "StaleSubmissionError"; }
+}
+
+// The optional guard is checked AFTER pacing and BEFORE addTurn. Historical
+// one-argument callers and empty native-AI/wait turns retain their behavior.
+export function createFocusedCoreStepper(runner, { paceTick, tickStarts, tickError = () => null }) {
+  let turnNumber = 0;
+  return async (intents = [], submitGuard) => {
+    const started = await paceTick();
+    if (intents.length && submitGuard !== undefined &&
+        (typeof submitGuard !== "function" || submitGuard() !== true)) throw new StaleSubmissionError();
+    runner.addTurn({ turnNumber: turnNumber++, intents });
+    const executed = runner.executeNextTick(), fatal = tickError();
+    if (!executed || fatal) throw new Error(`Engine tick failed: ${fatal}`);
+    tickStarts.push(started);
+  };
+}
+
 export function parseFocusedEuropeArgs(argv) {
   const result = { mode: null, seed: "europe-focus-001", maxCalls: 3,
     maxTicks: 60, minutes: 5, output: "logs/benchmark-focused-europe.json" };
@@ -120,14 +139,8 @@ export async function createFocusedEuropeWorld(options, { paceTick } = {}) {
   });
   runner.init();
   const human = game.player(info.id);
-  let turnNumber = 0;
   const tickStarts = [];
-  const step = async (intents = []) => {
-    const started = await paceTick();
-    tickStarts.push(started);
-    runner.addTurn({ turnNumber: turnNumber++, intents });
-    if (!runner.executeNextTick() || fatal) throw new Error(`Engine tick failed: ${fatal}`);
-  };
+  const step = createFocusedCoreStepper(runner, { paceTick, tickStarts, tickError: () => fatal });
   await step([{ type: "spawn", clientID, tile: game.ref(...HUMAN_SPAWN) }]);
   for (let i = 0; i < 10 && game.inSpawnPhase(); i++) await step();
   if (game.inSpawnPhase() || !human.hasSpawned()) throw new Error("Human spawn failed");
