@@ -294,7 +294,7 @@ export function hybridModelState(input) {
     snapshot_tick: o.snapshot_tick,
     city_mechanics: o.city_mechanics,
     economy: {
-      available_gold: o.building?.available_gold ?? null,
+      available_gold: o.building?.available_gold ?? o.land.self.gold ?? null,
       cities: o.building?.city_counts ?? { owned: null, pending: null },
       city_scan_status: o.building ? "worker_checked" : "unavailable",
       city_sites_checked: o.building?.coverage.worker_checked ?? 0,

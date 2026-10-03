@@ -604,7 +604,7 @@ export class HybridController extends LandController {
       this.abort = new AbortController();
       this.count++;
       const decomposed = Boolean(
-        hybrid && input.naval?.candidates.length && this.decideHybridDecomposed,
+        hybrid && offered.branch.boat_attack && this.decideHybridDecomposed,
       );
       this.onUpdate({
         status: hybrid

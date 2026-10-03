@@ -745,6 +745,59 @@ test("opt-in target/size route consumes Jev's chosen boat without replacing the 
   assert.equal(s.calls.filter((x) => x.kind === "jev").length, 0);
 });
 
+test("tribe focus suppresses all new coast targets without calling boat-only decomposition", async () => {
+  const naval = navalProposal();
+  const s = setup({
+    naval,
+    decideHybridDecomposed: () => {
+      throw new Error("boat-only route must not run");
+    },
+    decision: {
+      branch: "city_build",
+      kind: "city",
+      selected: "build_city_1",
+      candidate_id: "solo-1/map@100#1:c1",
+      context: {
+        game_id: "solo-1",
+        snapshot_tick: 100,
+        building_snapshot_id: "solo-1/map@100#1",
+        naval_snapshot_id: naval.snapshot_id,
+        plan_version: null,
+      },
+    },
+  });
+  s.controller.focusTribeId = 2;
+  s.adapter.observe = async () => ({
+    tick: s.status.tick,
+    observation: s.land,
+    focus_status: {
+      status: "available",
+      id: 2,
+      tick: s.status.tick,
+      game_id: "solo-1",
+      player_id: "tribe-2",
+      alive: true,
+      type: "tribe",
+      territory_tiles: 100,
+      relationship: "unallied",
+      adjacent: true,
+      worker_checked: true,
+      can_attack: true,
+      own_reserve_troops: 8000,
+      target_reserve_troops: 1000,
+      reserve_ratio: 8,
+      active_outgoing_count: 0,
+      active_outgoing_troops: 0,
+    },
+  });
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  assert.equal(s.calls.filter((x) => x.kind === "jev-decomposed").length, 0);
+  assert.equal(s.calls.filter((x) => x.kind === "jev").length, 1);
+  assert.deepEqual(s.sends, [{ kind: "city", id: "solo-1/map@100#1:c1" }]);
+  assert.equal(s.calls.filter((x) => x.kind === "naval-send").length, 0);
+});
+
 test("decomposed route is never invoked when naval scan fails but City remains legal", async () => {
   const s = setup({
     naval: navalProposal(),

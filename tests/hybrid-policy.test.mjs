@@ -254,6 +254,16 @@ test("boat action is a separate bounded Choice in the same request; Jev branch d
   ]);
 });
 
+test("own current gold remains visible when no City scan is available",()=>{
+  const input=base();input.building=null;
+  input.land.self.gold="47300";
+  const request=buildHybridRequest(input);
+  assert.equal(request.state.self.gold,"47300");
+  assert.equal(request.state.economy.available_gold,"47300");
+  assert.equal(request.state.economy.building_snapshot_id,null);
+  assert.equal(request.questions.city_site,undefined);
+});
+
 test("branch and independent land/site choices share one bounded Jev request", () => {
   const input = base();
   const request = buildHybridRequest(input);
