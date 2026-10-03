@@ -76,6 +76,44 @@ test("only offers adjacent legal targets and estimates the committed force, not 
   );
 });
 
+test("capture-trigger buffer is derived only and never an attack-success/enclosure verdict",()=>{
+  for(const [tiles,losses,one] of [[0,null,false],[1,1,true],[52,1,true],[99,1,true],
+    [100,1,true],[101,2,false],[2000,1901,false]]){
+    const raw=observation();raw.self.territory_tiles=tiles;
+    raw.neighbors[0].territory_tiles=tiles;
+    if(tiles===0)raw.neighbors[0].can_attack=false;
+    const state=modelState(raw);
+    for(const s of [state.self,state.neighbors[0]]){
+      assert.equal(s.tile_losses_until_elimination_threshold,losses);
+      assert.equal(s.one_successful_tile_loss_can_trigger_elimination,one);
+      assert.equal(Object.hasOwn(s,"is_enclosed"),false);
+    }
+    assert.equal(Object.hasOwn(raw.self,"tile_losses_until_elimination_threshold"),false);
+    assert.deepEqual(validateObservation(raw),raw);
+  }
+});
+
+test("sole-player border cue describes observed contacts, not closure scheduling or safety",()=>{
+  const raw=observation();raw.neighbors=[raw.neighbors[0]];
+  raw.border={total_edges:5,player_edges:5,wilderness_edges:0,water_edges:0,blocked_edges:0};
+  const state=modelState(raw);
+  assert.equal(state.border.all_edges_touch_one_unallied_player,true);
+  assert.equal(state.border.only_border_player_id,2);
+  assert.equal(Object.hasOwn(state.border,"is_enclosed"),false);
+  assert.equal(Object.hasOwn(state.border,"cleanup_scheduled"),false);
+  for(const kind of ["wilderness_edges","water_edges","blocked_edges"]){
+    const changed=structuredClone(raw);changed.border[kind]=1;changed.border.total_edges++;
+    assert.equal(modelState(changed).border.all_edges_touch_one_unallied_player,false);
+    assert.equal(modelState(changed).border.only_border_player_id,null);
+  }
+  raw.neighbors[0].relationship="ally";raw.neighbors[0].can_attack=false;
+  assert.equal(modelState(raw).border.all_edges_touch_one_unallied_player,false);
+  assert.equal(modelState(observation()).border.only_border_player_id,null);
+  const empty=observation();empty.neighbors=[];empty.border={total_edges:0,
+    player_edges:0,wilderness_edges:0,water_edges:0,blocked_edges:0};
+  assert.equal(modelState(empty).border.only_border_player_id,null);
+});
+
 test("optional neighbor structures are cloned strict same-tick facts, not a menu gate",()=>{
   const raw=observation();
   const zero={completed_count:0,constructing_count:0,completed_levels:0};

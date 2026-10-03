@@ -93,7 +93,15 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
     text,
     /31\.6|35\.3|once per second|every second|polling|1\.25|1\.7/,
   );
-  assert.equal(POLICY_VERSION, "land-strategy-v4.5.2-neighbor-structure-facts");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.5.3-territory-survival-buffer");
+  assert.match(text, /Prefer affordable early expansion for a land buffer, not idle until capacity/);
+  assert.match(text, /tile_losses_until_elimination_threshold assumes no other gains\/losses/);
+  assert.match(text, /successful enemy land-tile capture triggers conquest\/remnant cleanup despite reserve, not necessarily zero tiles/);
+  assert.match(text, /does NOT guarantee first-tile capture or detect enclosure\/automatic wait death/);
+  assert.match(text, /More tiles do not prove enclosure escape or safety/);
+  assert.match(text, /border\.all_edges_touch_one_unallied_player flags danger, not proven enclosure or scheduled cleanup/);
+  assert.match(text, /expand before exits close when legal/);
+  assert.match(text, /Enclosure can eliminate above 100 despite reserves/);
   assert.match(text, /structures, when present, reports snapshot-stamped completed\/constructing City\/Post instance counts and separate completed levels/);
   assert.match(text, /Missing means UNKNOWN, not zero/);
   assert.match(text, /counts reveal no placement, radius\/coverage, terrain, future strength or conquest guarantee/);

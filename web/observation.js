@@ -259,8 +259,15 @@ const round = (n, places = 4) => Number(n.toFixed(places));
 const ratio = (a, b) => (b === 0 ? null : round(a / b));
 const active = (a) => !a.retreating && a.troops > 0;
 const sum = (list) => list.reduce((total, a) => total + a.troops, 0);
+// AttackExecution checks remaining tiles <100 AFTER a successful enemy
+// land-tile capture. These are snapshot loss counts assuming no intervening
+// gains/other changes, not an attack-success prediction or enclosure rule.
 const stats = (p) => ({
   ...p,
+  tile_losses_until_elimination_threshold:
+    p.territory_tiles > 0 ? Math.max(1, p.territory_tiles - 99) : null,
+  one_successful_tile_loss_can_trigger_elimination:
+    p.territory_tiles >= 1 && p.territory_tiles <= 100,
   reserve_percent: round((100 * p.troops) / p.troop_capacity, 2),
   troops_per_tile: ratio(p.troops, p.territory_tiles),
 });
@@ -362,6 +369,10 @@ export function modelState(observation) {
   const wildernessTroops = sum(
     o.outgoing_attacks.filter((a) => active(a) && a.target_id === null),
   );
+  // Observed contacts ONLY: not a per-cluster enclosure/cleanup schedule.
+  const onlyBorderPlayer = o.border.total_edges > 0 &&
+    o.border.player_edges === o.border.total_edges && o.neighbors.length === 1 &&
+    o.neighbors[0].relationship === "unallied" ? o.neighbors[0].id : null;
   return {
     self: {
       ...stats(o.self),
@@ -376,6 +387,8 @@ export function modelState(observation) {
     },
     border: {
       ...o.border,
+      all_edges_touch_one_unallied_player: onlyBorderPlayer !== null,
+      only_border_player_id: onlyBorderPlayer,
       wilderness_share: share(o.border.wilderness_edges),
       player_share: share(o.border.player_edges),
       water_share: share(o.border.water_edges),

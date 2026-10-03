@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildRequest, parseDecision, POLICY_VERSION } from "../src/policy.mjs";
+import { buildActions, actionCriteria } from "../web/observation.js";
 
 // Raw-schema projections of exact rows 41, 73 and 78 from the ignored local
 // 2026-09-27 180-call match log. Values relevant to this policy (own reserve,
@@ -163,7 +164,7 @@ test("frozen 08:35:10: already attacked tribe246 before Jev opened tribe222", ()
   const row = frozen.firstSpread;
   const request = buildRequest(observationAt(row));
   const q = request.questions.action;
-  assert.equal(POLICY_VERSION, "land-strategy-v4.5.2-neighbor-structure-facts");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.5.3-territory-survival-buffer");
   assert.equal(row.oldChoice, "attack_player_222_10");
   assert.equal(
     request.state.neighbors.find((p) => p.id === 246).our_active_attack_troops,
@@ -461,4 +462,149 @@ test("synthetic tribe structure facts leave the persistent-focus gate and twenty
     assert.equal(parseDecision(response(choice, q.criteria), q.criteria).action, choice);
   delete o.neighbors[0].structures;
   assert.equal(Object.hasOwn(buildRequest(o).questions.action.criteria.attack_player_50_20, "target_structures"), false);
+});
+
+// EXACT row1 raw land input, engine tick3 (not synthetic), from ignored
+// logs/jev-hybrid-europe-easy-v452-first160.json. Historical v4.5.2 returned
+// BRANCH wait (p.8); its conditional land20 answer (p.36) was NOT emitted.
+// This fixture does not relabel that answer as flat gameplay or rescue it.
+// IMPORTANT D correction: this run's final death was enclosure cleanup, not
+// an observed enemy combat-tile capture. The conditional capture fact below
+// is source-backed general vulnerability, NOT this run's causal diagnosis.
+const hybridOpeningRow1 = {
+  self: { id: 1, troops: 2533, troop_capacity: 12141, territory_tiles: 52, gold: "100" },
+  border: { total_edges: 32, wilderness_edges: 32, player_edges: 0, water_edges: 0, blocked_edges: 0 },
+  incoming_attacks: [], neighbors: [], outgoing_attacks: [],
+};
+const openingHistory = { tick: 3, branch_choice: "wait", branch_wait_probability: 0.8,
+  conditional_land_choice: "attack_wilderness_20", conditional_land_probability: 0.36,
+  normal_intent_queued: false };
+
+test("frozen real hybrid row1:52-tile conditional vulnerability does not override the historical wait", () => {
+  const request = buildRequest(hybridOpeningRow1);
+  const q = request.questions.action;
+  assert.equal(request.state.self.tile_losses_until_elimination_threshold, 1);
+  assert.equal(request.state.self.one_successful_tile_loss_can_trigger_elimination, true);
+  assert.deepEqual(request.state.incoming_attacks, []); // no incoming attack is invented
+  assert.equal(request.state.border.all_edges_touch_one_unallied_player, false);
+  assert.equal(request.state.border.only_border_player_id, null);
+  assert.equal(openingHistory.branch_choice, "wait");
+  assert.equal(openingHistory.normal_intent_queued, false);
+  assert.equal(openingHistory.conditional_land_choice, "attack_wilderness_20");
+  const expected = actionCriteria(buildActions(hybridOpeningRow1));
+  assert.deepEqual(Object.keys(q.criteria), ["wait", ...[10, 20, 30, 40, 50].map((p) => `attack_wilderness_${p}`)]);
+  assert.deepEqual(Object.keys(q.criteria), Object.keys(expected));
+  for (const [choice, criterion] of Object.entries(q.criteria)) {
+    assert.equal(criterion.our_tile_losses_until_elimination_threshold, 1);
+    assert.equal(criterion.our_one_successful_tile_loss_can_trigger_elimination, true);
+    const unchanged = { ...criterion };
+    delete unchanged.our_tile_losses_until_elimination_threshold;
+    delete unchanged.our_one_successful_tile_loss_can_trigger_elimination;
+    assert.deepEqual(unchanged, expected[choice]); // all send/reserve arithmetic preserved
+    const answer = response(choice, q.criteria); // MOCK, not a new model judgment
+    assert.equal(parseDecision(answer, q.criteria).action, choice);
+    assert.deepEqual(parseDecision(answer, q.criteria).probabilities, answer.answers.action.probabilities);
+  }
+  assert.match(q.instructions.join(" "), /does NOT guarantee first-tile capture/);
+  assert.match(q.instructions.join(" "), /conquest\/remnant cleanup despite reserve, not necessarily zero tiles/);
+  assert.match(q.instructions.join(" "), /or detect enclosure\/automatic wait death/);
+  assert.match(q.instructions.join(" "), /More tiles do not prove enclosure escape or safety/);
+  assert.match(q.instructions.join(" "), /not proven enclosure or scheduled cleanup/);
+});
+
+test("synthetic boundary facts apply to self and player targets without a numeric reserve gate", () => {
+  for (const [tiles, losses, oneLoss] of [[0, null, false], [1, 1, true], [52, 1, true],
+    [99, 1, true], [100, 1, true], [101, 2, false], [2000, 1901, false]]) {
+    for (const type of ["tribe", "nation", "human"]) {
+      const o = syntheticNation();
+      o.self.territory_tiles = tiles;
+      o.neighbors[0].territory_tiles = tiles;
+      o.neighbors[0].can_attack = tiles > 0;
+      o.neighbors[0].type = type;
+      const request = buildRequest(o);
+      const neighbor = request.state.neighbors[0];
+      assert.equal(request.state.self.tile_losses_until_elimination_threshold, losses);
+      assert.equal(request.state.self.one_successful_tile_loss_can_trigger_elimination, oneLoss);
+      assert.equal(neighbor.tile_losses_until_elimination_threshold, losses);
+      assert.equal(neighbor.one_successful_tile_loss_can_trigger_elimination, oneLoss);
+      const criteria = request.questions.action.criteria;
+      assert.deepEqual(Object.keys(criteria), Object.keys(buildActions(o)));
+      for (const [choice, criterion] of Object.entries(criteria)) {
+        assert.equal(criterion.our_tile_losses_until_elimination_threshold, losses);
+        if (choice.startsWith("attack_player_")) {
+          assert.equal(criterion.target_tile_losses_until_elimination_threshold, losses);
+          assert.equal(criterion.target_one_successful_tile_loss_can_trigger_elimination, oneLoss);
+        }
+        assert.equal(parseDecision(response(choice, criteria), criteria).action, choice);
+      }
+    }
+  }
+});
+
+// EXACT late row39 raw land input at real engine tick381 from the same
+// ignored run. Historical Jev land10 was honored, submitted at382; that
+// attack gained11 tiles at383 before ENCLOSURE cleanup at384. No enemy
+// combat capture is claimed, and this contact predicate does not assert
+// is_enclosed, whether recalculation is scheduled, or an escape path.
+const hybridOpeningRow39 = {
+  self: { id: 1, troops: 11690, troop_capacity: 12141, territory_tiles: 52, gold: "37900" },
+  border: { total_edges: 32, wilderness_edges: 0, player_edges: 32, water_edges: 0, blocked_edges: 0 },
+  incoming_attacks: [], outgoing_attacks: [],
+  neighbors: [{ ...n(11, "tribe", 32, 1595, 11754, 3180),
+    structures: { ...structures(), source_tick: 381 } }],
+};
+
+test("frozen real hybrid row39: all observed edges touch tribe11, not an asserted enclosure or rescue", () => {
+  const request = buildRequest(hybridOpeningRow39);
+  assert.equal(request.state.border.all_edges_touch_one_unallied_player, true);
+  assert.equal(request.state.border.only_border_player_id, 11);
+  assert.equal(request.state.border.is_enclosed, undefined);
+  assert.equal(request.state.border.recalculation_scheduled, undefined);
+  assert.deepEqual(request.state.incoming_attacks, []);
+  assert.equal(request.state.self.tile_losses_until_elimination_threshold, 1);
+  assert.equal(request.state.neighbors[0].tile_losses_until_elimination_threshold, 3081);
+  const q = request.questions.action;
+  assert.deepEqual(Object.keys(q.criteria), ["wait", "attack_player_11_10", "attack_player_11_20"]);
+  const arithmetic = actionCriteria(buildActions(hybridOpeningRow39));
+  for (const [choice, criterion] of Object.entries(q.criteria)) {
+    for (const [name, value] of Object.entries(arithmetic[choice]))
+      assert.deepEqual(criterion[name], value);
+    assert.equal(parseDecision(response(choice, q.criteria), q.criteria).action, choice);
+  }
+  assert.match(q.instructions.join(" "), /not proven enclosure or scheduled cleanup/);
+  assert.match(q.instructions.join(" "), /Enclosure can eliminate above 100 despite reserves/);
+});
+
+test("synthetic border conditions distinguish mixed exits, multiple contacts, allies and zero edges", () => {
+  const cases = [];
+  const mixed = structuredClone(hybridOpeningRow39);
+  mixed.border.total_edges++;
+  mixed.border.wilderness_edges++;
+  cases.push(mixed);
+  const multiple = structuredClone(hybridOpeningRow39);
+  multiple.neighbors[0].shared_border_edges = 16;
+  multiple.neighbors.push(n(12, "tribe", 16, 1000, 5000, 1000));
+  cases.push(multiple);
+  const ally = structuredClone(hybridOpeningRow39);
+  ally.neighbors[0].relationship = "ally";
+  ally.neighbors[0].can_attack = false;
+  cases.push(ally);
+  const zero = structuredClone(hybridOpeningRow1);
+  zero.border = { total_edges: 0, wilderness_edges: 0, player_edges: 0, water_edges: 0, blocked_edges: 0 };
+  cases.push(zero);
+  for (const o of cases) {
+    const request = buildRequest(o);
+    assert.equal(request.state.border.all_edges_touch_one_unallied_player, false);
+    assert.equal(request.state.border.only_border_player_id, null);
+    const criteria = request.questions.action.criteria;
+    assert.deepEqual(Object.keys(criteria), Object.keys(buildActions(o)));
+    for (const choice of Object.keys(criteria))
+      assert.equal(parseDecision(response(choice, criteria), criteria).action, choice);
+  }
+  const bigger = structuredClone(hybridOpeningRow39);
+  bigger.self.territory_tiles = 2000; // synthetic: more tiles do not undo contact fact
+  const state = buildRequest(bigger).state;
+  assert.equal(state.border.all_edges_touch_one_unallied_player, true);
+  assert.equal(state.border.only_border_player_id, 11);
+  assert.equal(state.self.one_successful_tile_loss_can_trigger_elimination, false);
 });
