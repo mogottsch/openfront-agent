@@ -56,7 +56,7 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
     buildRequest(observation()).questions.action.instructions.join(" ");
   assert.match(
     text,
-    /Wilderness normally comes before untouched tribes, but available wilderness is NOT an instruction to attack every decision/,
+    /prefer a viable weak or contested tribe when its potential conquest-gold payoff outweighs more wilderness/i,
   );
   assert.match(text, /other humans or nations/i);
   assert.match(
@@ -93,7 +93,14 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
     text,
     /31\.6|35\.3|once per second|every second|polling|1\.25|1\.7/,
   );
-  assert.equal(POLICY_VERSION, "land-strategy-v4.4-focused-gate");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.5-tribe-progress");
+  assert.match(text, /land_intents_emitted counts emitted intents, not accepted or completed pushes/);
+  assert.match(text, /null means history unknown/);
+  assert.match(text, /last_land_send_percent describes only the latest send/);
+  assert.match(text, /compare a legal 20% option with 10% and wait/);
+  assert.match(text, /not a universal conquest guarantee/);
+  assert.match(text, /NOT change caused solely by our attacks/);
+  assert.ok(text.split(/\s+/).length <= 600, "Keep the strategy prompt bounded and concise");
 });
 
 test("accepts zero troops and reserves temporarily above capacity", () => {

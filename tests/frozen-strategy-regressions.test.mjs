@@ -163,7 +163,7 @@ test("frozen 08:35:10: already attacked tribe246 before Jev opened tribe222", ()
   const row = frozen.firstSpread;
   const request = buildRequest(observationAt(row));
   const q = request.questions.action;
-  assert.equal(POLICY_VERSION, "land-strategy-v4.4-focused-gate");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.5-tribe-progress");
   assert.equal(row.oldChoice, "attack_player_222_10");
   assert.equal(
     request.state.neighbors.find((p) => p.id === 246).our_active_attack_troops,
@@ -322,4 +322,65 @@ test("retreating/zero-force attack is not falsely marked as a current focus", ()
       .tribe_focus_context,
     /persistent, still-alive focus/,
   );
+});
+
+// Observed Easy first50 row50 facts: target50 remained alive at 3,145 tiles,
+// own reserve 19,927/46,137, defender reserve 2,348, no active outgoing stack.
+// First-send target tiles were 1,925. The panel reported six emitted 10%
+// intents. IMPORTANT: row50 is captured BEFORE the sixth send; its input history
+// therefore has five prior emissions. Tick/elapsed below are SYNTHETIC test-only
+// because that browser capture did not record authoritative GameView ticks.
+function stalledEasyFocus() {
+  return {
+    self: { id: 1, troops: 19927, troop_capacity: 46137,
+      territory_tiles: 5775, gold: "47300" },
+    border: { total_edges: 396, wilderness_edges: 246,
+      player_edges: 100, water_edges: 50, blocked_edges: 0 },
+    neighbors: [{ id: 50, type: "tribe", relationship: "unallied",
+      shared_border_edges: 100, troops: 2348, troop_capacity: 11698,
+      territory_tiles: 3145, can_attack: true, incoming_attacks: [] }],
+    incoming_attacks: [], outgoing_attacks: [],
+    tribe_focus: { id: 50, alive: true, type: "tribe", troops: 2348,
+      territory_tiles: 3145, adjacent: true, can_attack: true,
+      progress: { reference_kind: "first_emitted_land_intent",
+        reference_tick: 100, reference_tiles: 1925, elapsed_ticks: 30,
+        land_intents_emitted: 5, last_land_send_percent: 10 } },
+  };
+}
+
+test("frozen Easy row50 progress supports considering 20% but preserves Jev's 10% and wait", () => {
+  const request = buildRequest(stalledEasyFocus());
+  const progress = request.state.tribe_focus.progress;
+  assert.equal(progress.reference_tiles, 1925);
+  assert.equal(progress.territory_delta_since_reference, 1220);
+  assert.equal(progress.land_intents_emitted, 5);
+  assert.equal(request.state.tribe_focus.our_active_attack_troops, 0);
+  const q = request.questions.action;
+  assert.deepEqual(Object.keys(q.criteria), ["wait", "attack_player_50_10", "attack_player_50_20"]);
+  assert.equal(q.criteria.attack_player_50_20.focus_progress_facts.current_target_tiles, 3145);
+  assert.match(q.criteria.attack_player_50_20.focus_send_size_context, /not an automatic escalation/);
+  assert.match(q.instructions.join(" "), /compare a legal 20% option with 10% and wait/);
+  assert.match(q.instructions.join(" "), /NOT change caused solely by our attacks/);
+  for (const choice of ["wait", "attack_player_50_10", "attack_player_50_20"]) {
+    const answer = response(choice, q.criteria);
+    assert.equal(parseDecision(answer, q.criteria).action, choice);
+    assert.deepEqual(parseDecision(answer, q.criteria).probabilities, answer.answers.action.probabilities);
+  }
+  assert.throws(() => parseDecision(response("attack_player_50_30", q.criteria), q.criteria));
+});
+
+test("unknown recovered progress stays unknown; active push and signed reduction do not force escalation", () => {
+  const o = stalledEasyFocus();
+  o.tribe_focus.progress = { reference_kind: "first_authoritative_focus_observation",
+    reference_tick: 100, reference_tiles: 3500, elapsed_ticks: 30,
+    land_intents_emitted: null, last_land_send_percent: null };
+  o.outgoing_attacks = [{ id: "active50", target_id: 50, troops: 5000, retreating: false }];
+  const request = buildRequest(o);
+  assert.equal(request.state.tribe_focus.progress.territory_delta_since_reference, -355);
+  assert.equal(request.state.tribe_focus.progress.land_intents_emitted, null);
+  assert.equal(request.questions.action.criteria.wait.focus_progress_facts.land_intents_emitted, null);
+  assert.equal(request.state.tribe_focus.our_active_attack_troops, 5000);
+  assert.equal(parseDecision(response("wait", request.questions.action.criteria), request.questions.action.criteria).action, "wait");
+  delete o.tribe_focus.progress;
+  assert.equal(buildRequest(o).questions.action.criteria.attack_player_50_20.focus_progress_facts, undefined);
 });
