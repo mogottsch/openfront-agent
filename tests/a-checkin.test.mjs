@@ -47,6 +47,7 @@ test('records bounded Pi summary, escapes HTML, and selects a dedicated Luna ses
   assert.match(args.at(-1), /what moved forward since the last check-in/);
   assert.match(args.at(-1), /Avoid commit hashes, file names, test counts/);
   assert.match(args.at(-1), /If nothing new happened or A did not reply, say that plainly/);
+  assert.match(args.at(-1), /capture a screenshot and actually inspect that image with read/);
   assert.ok(!args.includes('--no-session'));
   assert.ok(!result.stdout.includes('API_KEY'));
   assert.equal(root.startsWith(repo), false);
