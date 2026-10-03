@@ -154,8 +154,11 @@ export async function createFocusedEuropeWorld(options, { paceTick } = {}) {
 
 // Current core facts for an ALREADY selected/recovered tribe. Absence from the
 // current neighbor list is never used as evidence of death or identity.
-export function observeFocusedCore(game, human, focus, history) {
-  const raw = observeCore(game, human);
+export function observeFocusedCore(game, human, focus, history, { gameId } = {}) {
+  // Optional actual seed identity enables cheap source-stamped unit facts;
+  // historical four-argument callers retain their original unknown/absent fields.
+  const raw = gameId === undefined ? observeCore(game, human) :
+    observeCore(game, human, { gameId });
   // Private live identities bind a Choice to the exact players observed,
   // rather than allowing smallID reuse to redirect an asynchronous answer.
   const targetIdentities = new Map(raw.observation.neighbors.map((p) =>
@@ -265,13 +268,13 @@ export async function runFocusedEurope(options, {
       const atTimer = timedWinCheckBoundary(game.elapsedGameSeconds(), options.minutes);
       if (!atTimer && second !== lastDecisionSecond) {
         lastDecisionSecond = second;
-        let snapshot = observeFocusedCore(game, human, focus, history);
+        let snapshot = observeFocusedCore(game, human, focus, history, { gameId: options.seed });
         if (!focus) {
           const recovered = recoverSingleActiveTribe(snapshot.observation);
           if (recovered !== null) {
             const target = game.playerBySmallID(recovered);
             focus = { id: recovered, player_id: target.id(), game_id: options.seed };
-            snapshot = observeFocusedCore(game, human, focus, null);
+            snapshot = observeFocusedCore(game, human, focus, null, { gameId: options.seed });
             focusEvents.push({ tick: snapshot.tick, event: "recovered_active_tribe", id: recovered });
           }
         }
