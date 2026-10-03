@@ -6,23 +6,35 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readLogicState } from './harness-logic-state.mjs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+async function readExamples() {
+  // Fresh isolated module graph on each request, so edited schema/builders are
+  // reflected without restarting the viewer. No shell or inherited secrets.
+  const { stdout } = await execFileAsync(process.execPath,
+    [fileURLToPath(new URL('./harness-logic-examples.mjs', import.meta.url))],
+    { timeout: 3000, maxBuffer: 1024 * 1024, env: {} });
+  return JSON.parse(stdout);
+}
 
 const dir = process.env.A_CHECKIN_STATE_DIR || join(homedir(), '.local/state/openfront-agent/a-checkin');
 const port = Number(process.env.A_CHECKIN_PORT || 18765);
 
-export function createViewer({ stateDir = dir, getLogicState = readLogicState } = {}) {
+export function createViewer({ stateDir = dir, getLogicState = readLogicState, getExamples = readExamples } = {}) {
   return createServer(async (req, res) => {
     const path = req.url;
     const doc = path?.match(/^\/docs\/([a-z0-9-]+\.(?:md|html))$/)?.[1];
-    if (req.method !== 'GET' || !(['/', '/index.html', '/logic', '/logic-state'].includes(path) || doc)) {
+    if (req.method !== 'GET' || !(['/', '/index.html', '/logic', '/logic-state', '/logic-examples'].includes(path) || doc)) {
       res.writeHead(404).end();
       return;
     }
     try {
       let body;
       let type = 'text/html; charset=utf-8';
-      if (path === '/logic-state') {
-        body = JSON.stringify(await getLogicState());
+      if (path === '/logic-state' || path === '/logic-examples') {
+        body = JSON.stringify(await (path === '/logic-state' ? getLogicState() : getExamples()));
         type = 'application/json; charset=utf-8';
       } else if (path === '/logic') {
         body = await readFile(new URL('../docs/harness-logic.html', import.meta.url));

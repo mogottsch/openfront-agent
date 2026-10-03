@@ -9,6 +9,8 @@ export const LOGIC_SOURCES = [
   'web/hybrid-controller.js', 'web/tribe-focus.js', 'web/neighbor-defenses.js',
   'web/game-adapter.js', 'web/building-adapter.js', 'web/defense-post-adapter.js',
   'web/naval-adapter.js', 'web/spatial-map.js', 'web/naval-spatial.js',
+  'web/hybrid-observation.js', 'web/defense-observation.js',
+  'scripts/harness-logic-examples.mjs',
 ];
 
 export function instructionsFrom(source) {

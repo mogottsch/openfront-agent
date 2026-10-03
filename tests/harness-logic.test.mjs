@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { LOGIC_SOURCES, instructionsFrom, readLogicState } from '../scripts/harness-logic-state.mjs';
 import { createViewer } from '../scripts/serve-a-checkin.mjs';
+import { buildExampleSet } from '../scripts/harness-logic-examples.mjs';
+import { createHash } from 'node:crypto';
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'harness-logic-'));
@@ -55,7 +57,10 @@ test('viewer serves progress and diagram, and blocks action endpoints, POST and 
   const dir = await mkdtemp(join(tmpdir(), 'harness-viewer-'));
   await writeFile(join(dir, 'index.html'), '<h1>Progress</h1>');
   let polls = 0;
-  const server = createViewer({ stateDir: dir, getLogicState: async () => { polls++; return { runtime: null }; } });
+  const server = createViewer({ stateDir: dir,
+    getLogicState: async () => { polls++; return { runtime: null }; },
+    getExamples: async () => ({ label: 'illustrative, not live' }),
+  });
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   t.after(() => new Promise((done) => server.close(done)));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -66,6 +71,7 @@ test('viewer serves progress and diagram, and blocks action endpoints, POST and 
   assert.match(await page.text(), /Hard harness rules vs\. Jev judgments/);
   assert.deepEqual(await (await fetch(`${base}/logic-state`)).json(), { runtime: null });
   assert.equal(polls, 1);
+  assert.deepEqual(await (await fetch(`${base}/logic-examples`)).json(), { label: 'illustrative, not live' });
   for (const path of ['/session', '/decision', '/plan', '/docs/..%2FAGENTS.md', '/docs/%2e%2e/secrets', '/logic-state?target=https://outside']) assert.equal((await fetch(`${base}${path}`)).status, 404);
   assert.equal((await fetch(`${base}/logic-state`, { method: 'POST' })).status, 404);
   assert.equal(polls, 1);
@@ -78,4 +84,44 @@ test('visual uses safe text insertion and makes source review/version boundaries
   assert.match(page, /running land:/);
   assert.match(page, /setInterval\(refresh,20000\)/);
   assert.doesNotMatch(page, /innerHTML|src="https?:/);
+  assert.match(page, /data-family="city"/);
+  assert.match(page, /What Jev actually chooses/);
+  assert.match(page, /NOT live gameplay/);
+  const graph = page.match(/<svg[\s\S]*?<\/svg>/)[0];
+  assert.equal(createHash('sha256').update(graph).digest('hex'), '46ed9cdcfbc2c45f47cbb360b45f364cade226da4fc4eec2ca3aedccf645542f', 'Original approved harness graph is preserved');
+});
+
+test('documentation examples use exact pure builders, preserve caps/identity, and never send', () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error('Documentation must not use network'); };
+  let e;
+  try { e = buildExampleSet(); } finally { globalThis.fetch = original; }
+  assert.match(e.label, /Illustrative synthetic/);
+  assert.equal(e.families.land.candidate.fraction, 0.2);
+  assert.equal(e.families.land.criterion.percent_of_available_troops, 20);
+  assert.deepEqual(e.families.land.criterion, e.families.land.request.questions.action.criteria.attack_player_2_20);
+  assert.equal(e.families.land.criterion.target_territory_tiles, 100);
+  assert.deepEqual(e.families.city.criterion, e.families.city.request.questions.city_site.criteria.build_city_1);
+  assert.deepEqual(e.families.post.criterion, e.families.post.request.questions.post_site.criteria.build_defense_post_1);
+  assert.equal(e.families.land.candidate.troops_remaining_estimate, 6400);
+  assert.equal(e.families.city.criterion.candidate_id, e.families.city.candidate.id);
+  assert.equal(e.families.city.criterion.gold_after_estimate, '175000');
+  assert.equal(e.families.boat.sizeCriterion.candidate_id, e.families.boat.candidate.id);
+  assert.equal(e.families.post.criterion.candidate_id, e.families.post.candidate.id);
+  assert.deepEqual(e.focus.offeredKeys, ['wait', 'attack_player_2_10', 'attack_player_2_20']);
+  assert.equal(e.inventory.source_tick, e.input.snapshot_tick);
+  for (const family of Object.values(e.families)) {
+    assert.doesNotMatch(JSON.stringify(family.request), /"tile"|"target_shore_tile"|"source_shore_tile"|"destination_tile"|"token"/);
+  }
+});
+
+test('viewer regenerates valid examples in an isolated fresh local process', async (t) => {
+  const server = createViewer();
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  t.after(() => new Promise((done) => server.close(done)));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/logic-examples`);
+  assert.equal(response.status, 200);
+  const examples = await response.json();
+  assert.match(examples.sourceVersions.land, /^land-strategy-/);
+  assert.equal(examples.families.city.candidate.kind, 'build_city');
 });
