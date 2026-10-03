@@ -1,6 +1,9 @@
-// Future-only, explicit read-only study: NOT imported by the live observation
-// or controller. Counts/terrain/range describe the current snapshot, not an
-// AttackExecution path, future defensive strength, or conquest probability.
+// Counts-only accessor/validator are source-wired in A's v4.5.2 observation;
+// at this handoff the running backend remains v4.5.1 until explicit restart.
+// No real model use of these counts is claimed. Known zero requires unit API,
+// actual GameID and coherent snapshot; missing facts mean UNKNOWN, not zero.
+// Full terrain/frontier/range analyzer remains FUTURE OFFLINE, never on 1 Hz.
+// Facts are not an attack path, future strength or conquest probability.
 // Shared GameView/GameImpl accessors only; no worker, intent, model, or timers.
 const TERRAIN_KEYS = ["plains", "highland", "mountain", "ocean", "impassable"];
 const terrainCounts = () => Object.fromEntries(TERRAIN_KEYS.map((key) => [key, 0]));
@@ -83,9 +86,9 @@ export function validateNeighborStructures(value) {
 /**
  * Cheap, synchronous units-only facts for one live tribe/nation. Shared
  * browser/core accessors; NO map, position, radius, worker or intent reads.
- * A future caller must compare source_tick with its owning observation tick.
- * Failure means unavailable, not zero buildings. Current raw schema is NOT
- * changed here, and this helper is not yet wired into the live observation.
+ * v4.5.2 source callers compare source_tick with the owning observation tick.
+ * Known zero needs the unit API and actual GameID context; missing is UNKNOWN.
+ * Source wiring is not evidence of deployed backend/model use or conquest.
  */
 export function observeNeighborStructures(game, targetId) {
   const { tick, gameId, target, identity, targetType } = structuresTarget(game, targetId);

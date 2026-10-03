@@ -1,8 +1,10 @@
-# Neighbor defense and terrain facts: standalone, not deployed
+# Neighbor structures: v4.5.2 source-wired; geometry remains future offline
 
-`web/neighbor-defenses.js` is an **explicit, read-only study module**. Nothing in the live observation, bridge, policy or controller imports it. It makes no worker request, emits no intent and requests no model. This slice does **not** change a running v4.5.1 experiment, introduce a nation army-ratio gate, or claim a conquest prediction.
+`web/neighbor-defenses.js` contains two separate read-only paths. The cheap **counts-only getter and strict validator are source-wired in A's v4.5.2** browser/core observations and policy descriptors. The full terrain/frontier/range analyzer remains **FUTURE OFFLINE**, with no live caller and never on the one-second loop. Neither path requests a worker/model or emits an intent; neither introduces a nation army-ratio gate or conquest prediction.
 
-Source reviewed: sibling OpenFront commit `bb8af015b515b3b717bd4d901074c5f4c16641cb`. The source supports current enemy tribe/nation building counts and terrain histograms in both browser and core APIs. Genuine-engine/browser parity and a separately versioned optional observation rollout remain future work; the current tests use dependency-free facades, not gameplay.
+**Deployment/evidence:** the backend was v4.5.1 at B's handoff and requires an explicit restart after the atomic v4.5.2 commit; use `/health` to check the actual running version. Source wiring, synthetic tests and the network-free native inventory check below are not a claim that a real model has received structure facts. Historical v4.5.1 conquest/gold evidence is unchanged and must not be relabeled v4.5.2.
+
+Source reviewed: sibling OpenFront commit `bb8af015b515b3b717bd4d901074c5f4c16641cb`. Enemy tribe/nation building metadata and actual map terrain are source-accessible in browser and core APIs. Dependency-free fixture checks verify the optional counts shape and calculation behavior; genuine GameView/GameImpl parity and real-model use require their own evidence.
 
 ## What the source actually exposes
 
@@ -18,9 +20,9 @@ Source reviewed: sibling OpenFront commit `bb8af015b515b3b717bd4d901074c5f4c1664
 
 A City is infrastructure here, **not a claim of direct per-tile combat protection**. Post presence/levels do not imply complete target coverage. Two overlapping Posts count as two structures but do not count a frontier tile twice; `AttackExecution` asks whether at least one qualifying Post exists.
 
-## Cheap optional structures-only slice (not wired yet)
+## Cheap optional structures-only slice (v4.5.2 source-wired)
 
-`observeNeighborStructures(game, targetId)` enumerates just the target's current City and Defense Post units, checks activity/construction/ownership/levels and verifies unchanged game/tick/target identity/life. It does **not** read map dimensions, tiles, unit positions, terrain, range, configuration, workers or model/intent methods. This is the intended low-cost first slice for a future optional `neighbor.structures` field:
+`observeNeighborStructures(game, targetId)` enumerates just the target's current City and Defense Post units, checks activity/construction/ownership/levels and verifies unchanged game/tick/target identity/life. It does **not** read map dimensions, tiles, unit positions, terrain, range, configuration, workers or model/intent methods. A's v4.5.2 source accepts this optional `neighbors[].structures` field; the following values are illustrative, not a live capture:
 
 ```js
 {
@@ -32,13 +34,15 @@ A City is infrastructure here, **not a claim of direct per-tile combat protectio
 
 `validateNeighborStructures(value)` strictly accepts exactly these keys and integer counts. It returns a detached clean payload. Each type permits at most 4,096 enumerated active instances; completed levels must be zero if completed count is zero, otherwise at least the completed count. A constructing structure is not included in completed levels. Missing/extra keys, null/unknown status, fractional/string/negative counts, impossible level sums and exceeded limits fail; they are not normalized to zero.
 
-**Future integration must require `structures.source_tick` equal the owning observation's snapshot tick.** The payload omits repeated game/target IDs because it will belong to a known neighbor entry, but the getter verifies these identities before returning. A module failure should leave this optional information unavailable, not invent a defense-free neighbor. Use the same getter and validator in both browser and actual-engine facade; genuine parity tests must precede a rollout claim. Units-only counts omit Post placement/range/coverage and terrain, so even observed completed count zero is not a general no-defense or whole-conquest guarantee.
+**Coherent snapshot requirement:** browser/core source producers require `structures.source_tick` equal their owning observation's snapshot tick; raw validation rejects mixed neighbor stamps, and Hybrid validation rejects a structures stamp different from its snapshot tick. The payload is nested under a known neighbor, so it omits repeated game/target IDs; the getter verifies those identities before returning.
 
-This module/test iteration alone changes no shared raw/model schema, integration bridge, prompt or live controller. Full territory/frontier analysis below remains explicit and slow; do not call it per neighbor on the one-second loop.
+**Known zero requires a working authoritative unit API, actual GameID context and the same snapshot.** Browser/core source leaves the field absent when the unit API or actual game context is unavailable; the core facade's optional `{gameId}` must come from its actual runner, not be manufactured to force known-zero output. Missing means **UNKNOWN**, not zero. Inconsistent metadata or a changed snapshot is rejected rather than converted to a defense-free target. The same getter/validator supplies both facades, but synthetic parity checks are not genuine engine/browser or real-model evidence.
+
+A's v4.5.2 model state/target criteria preserve facts only when present; the prompt distinguishes completed versus constructing instances and levels without changing menus, gates or sizes. Counts omit Post placement/range/coverage and terrain, so even observed completed count zero is not a general no-defense or whole-conquest guarantee. Full territory/frontier analysis below remains explicit and slow; do not call it per neighbor on the one-second loop.
 
 ## Compact proposed optional `neighbor.defenses` shape
 
-The standalone analyzer accepts `analyzeNeighborDefenses(game, {selfId, targetId})` and produces a snapshot-stamped result. The following payload is **illustrative, not an observed game**. Attach it as an optional field only in a future agreed raw schema version, after browser/core parity tests; it is rejected by today's raw schema.
+The FUTURE OFFLINE analyzer accepts `analyzeNeighborDefenses(game, {selfId, targetId})` and produces a snapshot-stamped result. The following payload is **illustrative, not an observed game**. Attach it as an optional field only in a future agreed raw schema version, after browser/core parity tests; it is rejected by today's raw schema.
 
 ```js
 {
@@ -67,15 +71,26 @@ The standalone analyzer accepts `analyzeNeighborDefenses(game, {selfId, targetId
 - `territory` exhaustively counts **current target-owned map tiles** by terrain, including unexpected water/impassable ownership rather than silently dropping it. It says nothing about the terrain of future acquisitions, reinforcements or fallout.
 - `frontier` counts **unique target-side passable land tiles** cardinally adjacent to our currently owned passable land. `shared_land_edges` separately counts contacts; two of our tiles touching one enemy tile produce two edges but only one enemy tile. This is not all of the enemy's borders and not an attack's active `borderSize` or queued tile order.
 - `within_completed_post_range_tiles` is exact current **range geometry** for those unique target-side frontier tiles, not measured future attack loss or a guaranteed protected frontier. Posts elsewhere on the map can geometrically cover a tile; an allied/third-party Post cannot satisfy the current defender-owned predicate. Constructing Posts provide no current range coverage.
-- Zero completed Posts from a successful authoritative enumeration is known zero. Missing accessors/status cause the analysis to fail rather than fabricate zero. Exceeded range-comparison budget produces **null** with `unknown_comparison_budget_exceeded`, never zero. An exceeded full-map scan budget throws rather than returning a sampled histogram mislabeled complete.
+- Zero completed Posts requires a successful authoritative enumeration, actual GameID and coherent snapshot. Missing accessors/status cause the analysis to fail rather than fabricate zero. Exceeded range-comparison budget produces **null** with `unknown_comparison_budget_exceeded`, never zero. An exceeded full-map scan budget throws rather than returning a sampled histogram mislabeled complete.
 
 ## Bounds, future integration, and limits
 
-The module scans **one target** over the whole map synchronously and only on explicit invocation. The default/hard map limit is 4,194,304 tiles, each type's enumeration limit is 4,096 units, and the default range comparison budget is 1,000,000 tile/Post pairs. Larger required range workloads retain count/terrain facts with unknown coverage; no model action is removed or substituted. The final tick/game/target-life check rejects changed snapshots. These bounds are not evidence that a full-map scan is inexpensive enough for a one-second controller.
+Only the FUTURE OFFLINE `analyzeNeighborDefenses` scans **one target** over the whole map synchronously and only on explicit invocation; the source-wired counts getter performs no map scan. The default/hard map limit is 4,194,304 tiles, each type's enumeration limit is 4,096 units, and the default range comparison budget is 1,000,000 tile/Post pairs. Larger required range workloads retain count/terrain facts with unknown coverage; no model action is removed or substituted. The final tick/game/target-life check rejects changed snapshots. These bounds are not evidence that a full-map scan is inexpensive enough for a one-second controller.
 
-Do **not** put one full-map scan per neighbor on the 1 Hz path. A future adapter should collect all selected targets in one bounded map pass, verify a common snapshot identity/tick, and describe any caching age or sampling explicitly. Another option is a less expensive initial slice: authoritative building counts plus current frontier histogram, with full-territory terrain absent/unknown rather than estimated from the frontier. Current frontier geometry cannot represent disconnected inland territory or the future march through a mountain interior. Missing data must remain missing; no prompt may infer defense-free land from an omitted optional field.
+Do **not** put one full-map scan per neighbor on the 1 Hz path. A future adapter should collect all selected targets in one bounded map pass, verify a common snapshot identity/tick, and describe any caching age or sampling explicitly. The v4.5.2 source-wired initial slice is authoritative building counts only. A future frontier histogram could be added separately, with full-territory terrain absent/unknown rather than estimated from the frontier. Current frontier geometry cannot represent disconnected inland territory or the future march through a mountain interior. Missing data must remain missing; no prompt may infer defense-free land from an omitted optional field.
 
 The D one-send study in `docs/nation-one-send.md` showed a 2,000-mountain-tile target with a completed Post surviving a send three times its initial reserve with 995 tiles left. That is a **controlled counterexample**, not a universal threshold. Current terrain/Post observations could make Jev's whole-conquest judgment better grounded, but still omit future growth, counters, fallout, active attack path, changing ownership and other defensive effects. The module provides no numeric finishability score, projected casualties, arbitrary ratio gate, target selector or send resizer.
+
+### Genuine-engine count evidence (network-free)
+
+On 2026-10-03 an explicitly network-forbidden check used fresh production Europe/Compact, native Easy AI, seed `neighbor-inventory-api-001`, 12 tribes and the same fixed three nations/France spawn. The only human setup action was the ordinary spawn; no human land/build action or model call occurred. Tick spacing was deliberately bypassed for this offline API check, **not** presented as live controller timing.
+
+- Switzerland's native AI created an actual City: at **tick 1263**, inventory was City completed **0**, constructing **1**, completed levels **0**; at **1283**, completed **1**, constructing **0**, completed levels **1**. Post inventory was zero in these two snapshots.
+- Source helper results matched the actual active `UnitImpl` arrays/construction flags/levels and the truthful read-only GameView-shaped proxy.
+- At **129 snapshots**, the shared browser `createGameAdapter` running against that facade produced a raw observation field-for-field equal to `observeCore(...,{gameId:actualSeed})`, including optional structure facts. The human remained alive.
+- Repeating the check reproduced the construction/completion snapshots and all parity assertions. Raw evidence is ignored at `logs/neighbor-structures-engine-check.json`; the temporary verifier was not added as a paid/model execution mode.
+
+This is **genuine-engine units/facade/observation evidence**, not an actual Chrome `GameView` run, a Jev-selected City, a human build intent, a conquest or a match result. It does not assert measured protected-frontier coverage or a positive native Post case. Real browser and model-use evidence remain separate.
 
 ### Checks
 

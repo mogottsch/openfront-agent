@@ -93,7 +93,11 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
     text,
     /31\.6|35\.3|once per second|every second|polling|1\.25|1\.7/,
   );
-  assert.equal(POLICY_VERSION, "land-strategy-v4.5.1-reference-clock-clarity");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.5.2-neighbor-structure-facts");
+  assert.match(text, /structures, when present, reports snapshot-stamped completed\/constructing City\/Post instance counts and separate completed levels/);
+  assert.match(text, /Missing means UNKNOWN, not zero/);
+  assert.match(text, /counts reveal no placement, radius\/coverage, terrain, future strength or conquest guarantee/);
+  assert.match(text, /City counts are infrastructure, not direct combat protection/);
   assert.match(text, /reference_tick\/reference_tiles are the PRE-INFERENCE decision snapshot associated with the first successfully emitted land intent, NOT emission time/);
   assert.match(text, /For recovered focus they are the first authoritative focus observation/);
   assert.match(text, /reference_tick_semantics labels this; elapsed_ticks is time since reference observation, not emission or acceptance/);
@@ -104,6 +108,15 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
   assert.match(text, /not a universal conquest guarantee/);
   assert.match(text, /NOT change caused solely by our attacks/);
   assert.ok(text.split(/\s+/).length <= 600, "Keep the strategy prompt bounded and concise");
+});
+
+test("omitted structure facts stay absent in model state and target criteria", () => {
+  const request = buildRequest(observation());
+  assert.equal(Object.hasOwn(request.state.neighbors[0], "structures"), false);
+  for (const [key, criterion] of Object.entries(request.questions.action.criteria)) {
+    if (key.startsWith("attack_player_"))
+      assert.equal(Object.hasOwn(criterion, "target_structures"), false);
+  }
 });
 
 test("accepts zero troops and reserves temporarily above capacity", () => {
@@ -308,6 +321,7 @@ test("missing key does not make a model request", async (t) => {
     "/agent.js",
     "/controller.js",
     "/tribe-focus.js",
+    "/neighbor-defenses.js",
     "/observation.js",
     "/game-adapter.js",
   ]) {

@@ -1,6 +1,7 @@
 // GameView adapter: observations only read state; execution emits a normal
 // attack intent through the small TypeScript bridge. No strategy lives here.
 import { ATTACK_FRACTIONS, fractionsForTarget } from "./observation.js";
+import { observeNeighborStructures } from "./neighbor-defenses.js";
 
 export function summarizeBorders(game, playerId, borderTiles) {
   const border = {
@@ -281,8 +282,16 @@ export function createGameAdapter({ game, read, sendAttack }) {
             const other = targetPlayer(id);
             if (!other)
               throw new Error("Neighbor disappeared during observation");
+            let structures;
+            if (["BOT", "NATION"].includes(other.type()) && other.isAlive() === true &&
+                typeof other.units === "function" && typeof game.gameID === "function") {
+              structures = observeNeighborStructures(game, id);
+              if (structures.source_tick !== tick)
+                throw new Error("Neighbor structure facts changed observation tick");
+            }
             return {
               ...stats(game, other),
+              ...(structures ? {structures} : {}),
               type: typeName[other.type()],
               relationship: relation(me, other),
               shared_border_edges: contact.edges,

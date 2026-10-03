@@ -95,8 +95,17 @@ test("core observation mirrors v4.1 border units and all neighbor attackers", ()
   assert.equal(actions.attack_player_2_30, undefined); // tribe ceiling
 });
 
-test("core observation is field-for-field equal to browser GameView adapter on the same state", async () => {
+test("core observation is field-for-field equal to browser including same-tick structures", async () => {
   const { game, me } = fixture();
+  game.gameID=()=>"structure-parity-001";
+  for(const id of [1,2,3]){
+    const core=game.playerBySmallID(id);core.id=()=>`player-${id}`;
+    const unit=(n,type,constructing,level)=>({id:()=>n,type:()=>type,
+      owner:()=>core,isActive:()=>true,isUnderConstruction:()=>constructing,
+      level:()=>level,tile:()=>{throw new Error("units-only facts must not scan positions");}});
+    core.units=type=>id!==2?[]:type==="City"?
+      [unit(1,type,false,2),unit(2,type,true,1)]:[unit(3,type,false,1)];
+  }
   const browser = Object.create(game);
   const wrapped = new Map();
   const asUpdate = (a) => ({
@@ -107,7 +116,8 @@ test("core observation is field-for-field equal to browser GameView adapter on t
   for (const id of [1, 2, 3]) {
     const core = game.playerBySmallID(id);
     wrapped.set(id, {
-      smallID: core.smallID, isPlayer: core.isPlayer, isAlive: core.isAlive,
+      smallID: core.smallID, id:core.id, units:core.units,
+      isPlayer: core.isPlayer, isAlive: core.isAlive,
       type: core.type, troops: core.troops, capacity: core.capacity,
       gold: () => 125000n,
       numTilesOwned: core.numTilesOwned,
@@ -126,7 +136,22 @@ test("core observation is field-for-field equal to browser GameView adapter on t
   });
   const browserObservation = (await adapter.observe()).observation;
   assert.equal(browserObservation.self.gold, "125000");
-  assert.deepEqual(observeCore(game, me).observation, browserObservation);
+  assert.deepEqual(observeCore(game, me,{gameId:"structure-parity-001"}).observation, browserObservation);
+  assert.deepEqual(browserObservation.neighbors[0].structures,{source_tick:100,
+    city:{completed_count:1,constructing_count:1,completed_levels:2},
+    defense_post:{completed_count:1,constructing_count:0,completed_levels:1}});
+});
+
+test("plain core needs actual game ID context for known-zero structures; absence stays unknown",()=>{
+  const f=fixture();const target=f.game.playerBySmallID(2);
+  target.id=()=>"tribe-2";target.units=()=>[];
+  assert.equal(Object.hasOwn(observeCore(f.game,f.me).observation.neighbors[0],"structures"),false);
+  assert.equal(observeCore(f.game,f.me,{gameId:"actual-core-game"}).observation
+    .neighbors[0].structures.city.completed_count,0);
+  f.game.gameID=()=>"actual-core-game";
+  assert.throws(()=>observeCore(f.game,f.me,{gameId:"other-game"}),/changed identity/);
+  target.units=()=>{f.advance();return [];};
+  assert.throws(()=>observeCore(f.game,f.me,{gameId:"actual-core-game"}),/changed during observation/);
 });
 
 test("core observation rejects missing, numeric and negative gold instead of omitting the fact", () => {

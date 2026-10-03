@@ -8,6 +8,8 @@ export const fractionsForTarget = (type) =>
   type === "tribe" ? TRIBE_ATTACK_FRACTIONS : ATTACK_FRACTIONS;
 export const OBSERVATION_ERROR =
   "Invalid land observation (self, border, neighbors, incoming_attacks, outgoing_attacks, optional tribe_focus)";
+import { validateNeighborStructures } from "./neighbor-defenses.js";
+
 const TYPES = ["human", "nation", "tribe"];
 const fail = () => {
   throw new Error(OBSERVATION_ERROR);
@@ -131,18 +133,13 @@ export function validateObservation(value) {
   const outgoing = attackList(value.outgoing_attacks, null, true);
   const ids = new Set([value.self.id]);
   let sharedEdges = 0;
+  let structuresTick = null;
   const neighbors = value.neighbors.map((n) => {
-    exact(n, [
-      "id",
-      "type",
-      "relationship",
-      "shared_border_edges",
-      "troops",
-      "troop_capacity",
-      "territory_tiles",
-      "can_attack",
-      "incoming_attacks",
-    ]);
+    const neighborKeys = [
+      "id", "type", "relationship", "shared_border_edges", "troops",
+      "troop_capacity", "territory_tiles", "can_attack", "incoming_attacks",
+    ];
+    exact(n, Object.hasOwn(n, "structures") ? [...neighborKeys, "structures"] : neighborKeys);
     playerStats(n);
     integer(n.shared_border_edges, 1);
     if (
@@ -156,7 +153,15 @@ export function validateObservation(value) {
       fail();
     ids.add(n.id);
     sharedEdges += n.shared_border_edges;
-    return { ...n, incoming_attacks: attackList(n.incoming_attacks, n.id) };
+    let structures;
+    if (Object.hasOwn(n, "structures")) {
+      if (n.type !== "tribe" && n.type !== "nation") fail();
+      structures = validateNeighborStructures(n.structures);
+      if (structuresTick !== null && structuresTick !== structures.source_tick) fail();
+      structuresTick = structures.source_tick;
+    }
+    return { ...n, ...(structures ? {structures} : {}),
+      incoming_attacks: attackList(n.incoming_attacks, n.id) };
   });
   if (sharedEdges !== value.border.player_edges) fail();
   let focus;

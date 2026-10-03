@@ -76,6 +76,30 @@ test("only offers adjacent legal targets and estimates the committed force, not 
   );
 });
 
+test("optional neighbor structures are cloned strict same-tick facts, not a menu gate",()=>{
+  const raw=observation();
+  const zero={completed_count:0,constructing_count:0,completed_levels:0};
+  raw.neighbors[0].structures={source_tick:100,city:{completed_count:1,
+    constructing_count:1,completed_levels:2},defense_post:{...zero}};
+  const clean=validateObservation(raw);
+  assert.deepEqual(modelState(raw).neighbors[0].structures,raw.neighbors[0].structures);
+  assert.deepEqual(buildActions(raw),buildActions(observation()));
+  raw.neighbors[0].structures.city.completed_count=3;
+  assert.equal(clean.neighbors[0].structures.city.completed_count,1);
+  assert.equal(Object.hasOwn(modelState(observation()).neighbors[0],"structures"),false);
+  for(const mutate of [s=>{s.city.extra=true;},s=>{s.city.completed_levels=-1;},
+    s=>{s.city.completed_count=1;},s=>{s.defense_post.constructing_count=0.5;},
+    s=>{s.source_tick=-1;},s=>{s.frontier_protected=true;}]){
+    const bad=observation();bad.neighbors[0].structures={source_tick:100,
+      city:{...zero},defense_post:{...zero}};mutate(bad.neighbors[0].structures);
+    assert.throws(()=>validateObservation(bad));
+  }
+  const mixed=observation();mixed.neighbors[1].type="nation";
+  for(const n of mixed.neighbors)n.structures={source_tick:n.id===2?100:101,
+    city:{...zero},defense_post:{...zero}};
+  assert.throws(()=>validateObservation(mixed),/Invalid land observation/);
+});
+
 test("a player attack remains available without wilderness; immunity disables that target", () => {
   const raw = observation();
   raw.border.wilderness_edges = 0;

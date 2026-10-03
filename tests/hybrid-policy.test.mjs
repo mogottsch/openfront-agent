@@ -254,6 +254,16 @@ test("boat action is a separate bounded Choice in the same request; Jev branch d
   ]);
 });
 
+test("hybrid structures must match the owning land snapshot clock",()=>{
+  const input=base();const zero={completed_count:0,constructing_count:0,completed_levels:0};
+  input.land.neighbors[0].structures={source_tick:input.snapshot_tick,
+    city:{...zero},defense_post:{...zero}};
+  const r=buildHybridRequest(input);
+  assert.deepEqual(r.state.neighbors[0].structures,input.land.neighbors[0].structures);
+  input.land.neighbors[0].structures.source_tick--;
+  assert.throws(()=>buildHybridRequest(input),/share the hybrid observation tick/);
+});
+
 test("own current gold remains visible when no City scan is available",()=>{
   const input=base();input.building=null;
   input.land.self.gold="47300";

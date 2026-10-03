@@ -155,6 +155,7 @@ const publicFiles = new Map([
   ["/controller.js", new URL("../web/controller.js", import.meta.url)],
   ["/tribe-focus.js", new URL("../web/tribe-focus.js", import.meta.url)],
   ["/observation.js", new URL("../web/observation.js", import.meta.url)],
+  ["/neighbor-defenses.js", new URL("../web/neighbor-defenses.js", import.meta.url)],
   ["/game-adapter.js", new URL("../web/game-adapter.js", import.meta.url)],
   [
     "/hybrid-observation.js",

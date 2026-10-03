@@ -163,7 +163,7 @@ test("frozen 08:35:10: already attacked tribe246 before Jev opened tribe222", ()
   const row = frozen.firstSpread;
   const request = buildRequest(observationAt(row));
   const q = request.questions.action;
-  assert.equal(POLICY_VERSION, "land-strategy-v4.5.1-reference-clock-clarity");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.5.2-neighbor-structure-facts");
   assert.equal(row.oldChoice, "attack_player_222_10");
   assert.equal(
     request.state.neighbors.find((p) => p.id === 246).our_active_attack_troops,
@@ -395,4 +395,70 @@ test("unknown recovered progress stays unknown; active push and signed reduction
   assert.equal(parseDecision(response("wait", request.questions.action.criteria), request.questions.action.criteria).action, "wait");
   delete o.tribe_focus.progress;
   assert.equal(buildRequest(o).questions.action.criteria.attack_player_50_20.focus_progress_facts, undefined);
+});
+
+// SYNTHETIC structures-only fixtures, not structure observations from the
+// historical Easy trace or real/model conquest outcomes. Source tick100 is
+// synthetic test-only. Known structures NEVER change menu membership or sizes.
+const structureCounts = (completed_count = 0, constructing_count = 0, completed_levels = completed_count) => ({
+  completed_count, constructing_count, completed_levels,
+});
+const structures = (city = structureCounts(), defense_post = structureCounts()) => ({
+  source_tick: 100, city, defense_post,
+});
+function syntheticNation() {
+  return {
+    self: { id: 1, troops: 30000, troop_capacity: 40000, territory_tiles: 2500 },
+    border: { total_edges: 1, wilderness_edges: 0, player_edges: 1, water_edges: 0, blocked_edges: 0 },
+    neighbors: [n(2, "nation", 1, 5000, 20000, 2000)],
+    incoming_attacks: [], outgoing_attacks: [],
+  };
+}
+
+test("synthetic nation structure facts remain conditional facts, not a send threshold or conquest gate", () => {
+  const o = syntheticNation();
+  const baseline = buildRequest(o);
+  const offered = ["wait", ...[10, 20, 30, 40, 50].map((size) => `attack_player_2_${size}`)];
+  assert.deepEqual(Object.keys(baseline.questions.action.criteria), offered);
+  assert.equal(Object.hasOwn(baseline.state.neighbors[0], "structures"), false);
+  for (const facts of [
+    structures(), // authoritative known zero is not missing
+    structures(structureCounts(1, 1, 3), structureCounts(1, 2, 4)),
+    structures(structureCounts(0, 1), structureCounts(0, 2)), // not completed
+  ]) {
+    o.neighbors[0].structures = facts;
+    const request = buildRequest(o);
+    const q = request.questions.action;
+    assert.deepEqual(request.state.neighbors[0].structures, facts);
+    assert.deepEqual(Object.keys(q.criteria), offered);
+    assert.deepEqual(request.state.strategy, baseline.state.strategy);
+    for (const choice of offered) {
+      assert.equal(parseDecision(response(choice, q.criteria), q.criteria).action, choice);
+      if (choice === "wait") continue;
+      assert.deepEqual(q.criteria[choice].target_structures, facts);
+      const withoutFacts = { ...q.criteria[choice] };
+      delete withoutFacts.target_structures;
+      assert.deepEqual(withoutFacts, baseline.questions.action.criteria[choice]);
+      assert.match(q.criteria[choice].nation_conquest_context, /ratio alone cannot establish/);
+    }
+    assert.match(q.instructions.join(" "), /Missing means UNKNOWN, not zero/);
+    assert.match(q.instructions.join(" "), /counts reveal no placement, radius\/coverage, terrain, future strength or conquest guarantee/);
+  }
+});
+
+test("synthetic tribe structure facts leave the persistent-focus gate and twenty-percent cap unchanged", () => {
+  const o = stalledEasyFocus();
+  const baseline = buildRequest(o);
+  // Add only SYNTHETIC facts: no historical structure capture is claimed.
+  o.neighbors[0].structures = structures(structureCounts(1, 0, 2), structureCounts(1, 1));
+  const request = buildRequest(o);
+  const q = request.questions.action;
+  assert.deepEqual(Object.keys(q.criteria), Object.keys(baseline.questions.action.criteria));
+  assert.deepEqual(request.state.strategy, baseline.state.strategy);
+  assert.deepEqual(q.criteria.attack_player_50_20.target_structures, o.neighbors[0].structures);
+  assert.equal(q.criteria.attack_player_50_30, undefined);
+  for (const choice of ["wait", "attack_player_50_10", "attack_player_50_20"])
+    assert.equal(parseDecision(response(choice, q.criteria), q.criteria).action, choice);
+  delete o.neighbors[0].structures;
+  assert.equal(Object.hasOwn(buildRequest(o).questions.action.criteria.attack_player_50_20, "target_structures"), false);
 });

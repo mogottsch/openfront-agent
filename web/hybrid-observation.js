@@ -76,6 +76,9 @@ export function validateHybridInput(input) {
     throw new Error("Invalid hybrid decision input");
   }
   const land = validateObservation(input.land);
+  if (land.neighbors.some(n => n.structures &&
+      n.structures.source_tick !== input.snapshot_tick))
+    throw new Error("Neighbor structures do not share the hybrid observation tick");
   const mechanics = input.city_mechanics;
   if (
     !only(mechanics, ["troop_capacity_gain_display", "construction_ticks"]) ||

@@ -1,7 +1,9 @@
-// Read the *core* Game/Player at a turn boundary into the same v4.1 contract
-// used by the browser GameView adapter. No new fields or hidden policy.
+// Read core Game/Player at a turn boundary into the shared browser contract.
+// Optional source-stamped structures require a known actual game ID context;
+// absent API/context means unknown, never a fabricated zero-building count.
 import { setTimeout as sleepMs } from "node:timers/promises";
 import { summarizeBorders } from "../web/game-adapter.js";
+import { observeNeighborStructures } from "../web/neighbor-defenses.js";
 import {
   buildActions,
   fractionsForTarget,
@@ -34,7 +36,17 @@ const attacksAgainst = (player) => player.incomingAttacks().map((a) => {
   };
 });
 
-export function observeCore(game, me) {
+export function observeCore(game, me, {gameId = null} = {}) {
+  if (gameId !== null && (typeof gameId !== "string" || !gameId))
+    throw new Error("Invalid actual game ID context");
+  if (gameId !== null && typeof game.gameID === "function" && game.gameID() !== gameId)
+    throw new Error("Core game ID context changed identity");
+  const structuresGame = typeof game.gameID === "function" ? game : gameId === null ? null :
+    new Proxy(game, {get(target,prop){
+      if(prop === "gameID") return ()=>gameId;
+      const value=Reflect.get(target,prop,target);
+      return typeof value === "function" ? value.bind(target) : value;
+    }});
   if (!me?.hasSpawned() || !me.isAlive() || me.type() !== "HUMAN")
     throw new Error("Human is not active for observation");
   const tick = game.ticks();
@@ -50,8 +62,16 @@ export function observeCore(game, me) {
     const legal = friendship === "unallied" && other.isAlive() &&
       me.canAttack(contact.tile) && me.canAttackPlayer(other) &&
       game.ownerID(contact.tile) === id;
+    let structures;
+    if (structuresGame && ["BOT","NATION"].includes(other.type()) &&
+        other.isAlive() === true && typeof other.units === "function") {
+      structures=observeNeighborStructures(structuresGame,id);
+      if(structures.source_tick !== tick)
+        throw new Error("Neighbor structures changed core observation tick");
+    }
     return {
       ...stats(game, other),
+      ...(structures ? {structures} : {}),
       type: typeName[other.type()],
       relationship: friendship,
       shared_border_edges: contact.edges,

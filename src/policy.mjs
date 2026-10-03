@@ -7,7 +7,7 @@ import {
   MAX_ACTIONS,
 } from "../web/observation.js";
 export { validateObservation, OBSERVATION_ERROR };
-export const POLICY_VERSION = "land-strategy-v4.5.1-reference-clock-clarity";
+export const POLICY_VERSION = "land-strategy-v4.5.2-neighbor-structure-facts";
 
 // Only describe facts already in the approved land observation. These notes
 // never filter, rerank, resize or replace a model-selected legal action.
@@ -57,6 +57,7 @@ function focusedCriteria(clean, state) {
     if (!neighbor) continue;
     criterion.target_territory_tiles = neighbor.territory_tiles;
     criterion.target_available_troops = neighbor.troops;
+    if (neighbor.structures) criterion.target_structures = neighbor.structures;
     criterion.our_active_attack_troops_against_target =
       neighbor.our_active_attack_troops;
     if (neighbor.type === "tribe") {
@@ -98,6 +99,7 @@ export function buildRequest(observation, model = "jev-latest") {
           "Early-game priorities are being refined: earlier guidance favored wilderness first; Moritz now emphasizes tribe conquest gold. Before focus, prefer a viable weak or contested tribe when its potential conquest-gold payoff outweighs more wilderness, not a tribe send with inadequate reserves. neighbors[].attacked_by_other_humans_or_nations identifies attacks by other humans or nations; our own attacks, retreating forces and other tribes do not qualify. Do not abandon an unfinished focus for them. Wilderness remains an alternative, not a command every decision. An active wilderness push is NOT an automatic reason to wait: use self.active_wilderness_attack_to_available_reserve_ratio and post-send reserve to distinguish a tiny tail from a well-funded push. The percentage is a commitment, not a reserve target.",
           "state.tribe_focus is a still-alive selected tribe: retain it until authoritative death confirmation. Finish that target before starting another tribe, wilderness or player attack; lost-border wilderness reconnection is the explicit exception. Without stored focus, continue an already active tribe rather than open a new front. Against tribes use at most twenty percent. Wait when the existing push looks sufficient; reinforce the same target when needed and safe. An exhausted stack is not conquest.",
           "Read tribe_focus.progress only when present. For first_emitted_land_intent, reference_tick/reference_tiles are the PRE-INFERENCE decision snapshot associated with the first successfully emitted land intent, NOT emission time. For recovered focus they are the first authoritative focus observation. reference_tick_semantics labels this; elapsed_ticks is time since reference observation, not emission or acceptance. territory_delta_since_reference is current tiles minus reference_tiles, NOT change caused solely by our attacks. land_intents_emitted counts emitted intents, not accepted or completed pushes; null means history unknown. last_land_send_percent describes only the latest send. If repeated small sends have not finished the tribe and it persists or grows, compare a legal 20% option with 10% and wait using active force, defender reserve/territory, incoming pressure and post-send home reserve. Controlled engine cases support considering stronger reinforcement, not a universal conquest guarantee. Do not mechanically repeat 10%, automatically escalate, or wait forever; if home defense is thin, regrow. Worker gold or partial territory is not proof of conquest bounty; actual elimination matters.",
+          "neighbors[].structures, when present, reports snapshot-stamped completed/constructing City/Post instance counts and separate completed levels. Missing means UNKNOWN, not zero. Constructing is not completed strength; counts reveal no placement, radius/coverage, terrain, future strength or conquest guarantee. City counts are infrastructure, not direct combat protection.",
           "Take all attackable bordering tribes before attacking any nation. Then attack only if confident we can FINISH conquering the whole nation, ideally in one send; aggression can create lasting, not permanent, hostility. Currently available troops or committed-to-defender ratio do NOT measure total territorial resistance or full-conquest probability. Unknown defenses and reinforcements remain unknown; wait rather than a token nation raid when a credible finish is unsupported.",
           "Under incoming pressure, compare our reserve with the attacker's reserve PLUS its active incoming force via attackers[].our_reserve_is_stronger; consider all attackers. Do not full-send or chain large sends or assume rescue. Top-level attackers threaten us; a neighbor's attackers target that neighbor. Outgoing troops are not home defense. Waiting leaves current attacks running. Counts are display units; ratios/remaining reserves are calculated. No city-defense or encirclement strategy is assumed.",
         ],
