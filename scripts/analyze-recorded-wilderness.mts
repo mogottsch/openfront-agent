@@ -1,5 +1,7 @@
-// OFFLINE historical intent replay + exact post-hoc geometry, NOT a new policy
-// or live model game. Never calls runFocusedEurope, Start, Jev or any provider.
+// Fresh LOCAL SOLO / GameType.Singleplayer engine replay of recorded normal
+// intents + post-hoc geometry. NOT OpenFront Replay mode or bridge Replay
+// execution. NO current model inference, new strategy or autonomous Replay UI.
+// Never calls runFocusedEurope, Start, Jev or any provider.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -220,9 +222,11 @@ export async function replayRecordedWilderness() {
   assert.equal(choices.wait, 79);
   assert.ok(decisionByTick.has(891));
   const root = resolve(process.env.OPENFRONT_DIR || "../OpenFrontIO");
-  const { TerrainType } = await import(pathToFileURL(resolve(root, "src/core/game/Game.ts")).href);
+  const { TerrainType, GameType } = await import(pathToFileURL(resolve(root, "src/core/game/Game.ts")).href);
   const world = await createFocusedEuropeWorld({ seed: tape.config.seed,
     minutes: tape.config.minutes }, { paceTick: async () => 0 });
+  assert.equal(world.config.gameConfig().gameType, GameType.Singleplayer,
+    "Historical reconstruction must stay in the approved local Solo / Singleplayer engine");
   assert.deepEqual(world.metadata, tape.metadata, "Native roster/config/metadata drift");
   const { game, human } = world;
   assert.deepEqual({ tick: game.ticks(), tiles: human.numTilesOwned(),
@@ -268,8 +272,10 @@ export async function replayRecordedWilderness() {
   const assets: Record<string, string> = {};
   for (const name of ["map4x.bin", "map16x.bin", "manifest.json"])
     assets[name] = sha(await readFile(resolve(root, "resources/maps/europe", name)));
-  const result = { schema_version: 1,
-    label: "historical-real-Jev-normal-intent-replay-plus-posthoc-geometry",
+  const result = { schema_version: 2,
+    label: "fresh-Solo-Singleplayer-engine-replay-of-recorded-normal-intents-plus-posthoc-geometry",
+    execution_environment: { game_type: world.config.gameConfig().gameType,
+      local_solo: true, openfront_replay_mode: false, bridge_replay_execution: false },
     model_calls_this_analysis: 0, new_policy_choices: 0, heldout_seeds_used: 0,
     input: { file: INPUT, sha256: sha(bytes), policy: tape.policy,
       historical_decisions: 90, historical_choice_counts: choices },
@@ -278,14 +284,15 @@ export async function replayRecordedWilderness() {
       normal_intents_replayed: replayedIntents, final: after,
       conquests_equal: true, win_events_equal: true },
     metadata: world.metadata, asset_sha256: assets, snapshots: captures,
-    caveats: ["Historical action replay, not a new Jev game or strategy result.",
+    caveats: ["Fresh local Solo / Singleplayer engine replay of recorded normal intents, NOT OpenFront Replay mode or bridge Replay execution.",
+      "Historical reconstruction only: no model runs in this context; not a fresh model strategy result.",
       "Native AI still executes normally; only the human's recorded intents are replayed.",
       "Geometry describes only ticks 891 and 901, not causes of all 79 waits.",
       "Cardinal neutral reachability is a static upper bound, not guaranteed capture, ROI or enough attack troops.",
       "All map cells classified exactly under 4.2M bound; no sampling. Not a deployed observation or model override."] };
   await mkdir("logs", { recursive: true });
   await writeFile(OUTPUT, JSON.stringify(result, null, 2) + "\n");
-  console.log(`Historical replay hash ${after.hash} at tick ${after.tick} verified; ${verifiedInputs} inputs matched`);
+  console.log(`Fresh Solo/Singleplayer recorded-intent engine replay: hash ${after.hash} at tick ${after.tick} verified; ${verifiedInputs} inputs matched`);
   for (const s of captures) console.log(`tick ${s.source_stamp.snapshot_tick}: ` +
     `${s.raw_border_edges.wilderness_edges} wilderness edges / ${s.distinct_border_seed_tiles} distinct seeds; ` +
     `${s.reachable_component_count} components / ${s.reachable_passable_tiles} reachable neutral tiles; ` +

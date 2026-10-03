@@ -1,10 +1,10 @@
-# Recorded Easy wilderness opportunity: exact historical replay
+# Recorded Easy wilderness opportunity: Solo engine reconstruction
 
-**Historical action replay + post-hoc geometry, not a new live game, new policy result or model override.** This study replays only the eleven normal attack intents recorded in A's [real 90-decision v4.5.1 trace](focus-easy-v4.5.1-validation.md), at their original `submitted_tick`. It requests no model choice, changes no troop amount/target, injects no gold/terrain, makes no API/Start/browser call, and uses none of the held-out seeds. Native Easy AI continues normally. The original match remains **censored, not won**.
+**Fresh Singleplayer/Solo engine replay of recorded normal intents + post-hoc geometry. This is NOT OpenFront Replay mode, bridge Replay execution, or autonomous Replay UI play. No model runs in this reconstruction context; it is not a fresh model strategy result or model override.** This study replays only the eleven normal attack intents recorded in A's earlier [real 90-decision v4.5.1 trace](focus-easy-v4.5.1-validation.md), at their original `submitted_tick`. It requests no model choice, changes no troop amount/target, injects no gold/terrain, makes no API/Start/browser call, and uses none of the held-out seeds. Native Easy AI continues normally. The original match remains **censored, not won**.
 
 ## Reproduction is verified before geometry is credited
 
-`scripts/analyze-recorded-wilderness.mts` uses C's fresh `createFocusedEuropeWorld`: production Europe Compact, Easy, seed **`europe-focus-001`**, human **(543,491)**, twelve tribes and England/Spain/Switzerland, original five-minute config. It asserts the complete original metadata/settled roster before progressing and exactly matches the original tick-3 starting state.
+`scripts/analyze-recorded-wilderness.mts` uses C's fresh `createFocusedEuropeWorld`: production Europe Compact, Easy, seed **`europe-focus-001`**, human **(543,491)**, twelve tribes and England/Spain/Switzerland, original five-minute config. It explicitly asserts **`GameType.Singleplayer`**, then the complete original metadata/settled roster before progressing, and exactly matches the original tick-3 starting state. All historical intents pass through the normal Solo `GameRunner`/`Executor` pipeline; no Replay-mode or bridge execution path is used.
 
 The replay matched **all 90 historical physical observation snapshots** (self, raw borders, neighbors, incoming/outgoing attacks), all eleven normal intents, actual ConquestEvents, and zero Win events. Final state is identical:
 
@@ -24,12 +24,13 @@ The tape records **8 wilderness 20% choices, 3 tribe-11 20% choices and 79 waits
 ../OpenFrontIO/node_modules/.bin/tsx --tsconfig ../OpenFrontIO/tsconfig.json \
   scripts/analyze-recorded-wilderness.mts --self-test
 
-# Explicit OFFLINE historical action-tape replay, not a live/provider mode.
+# OFFLINE fresh Singleplayer/Solo engine replay of recorded normal intents.
+# NOT OpenFront Replay mode or bridge Replay execution; no current model inference.
 ../OpenFrontIO/node_modules/.bin/tsx --tsconfig ../OpenFrontIO/tsconfig.json \
   scripts/analyze-recorded-wilderness.mts --replay
 ```
 
-Only `--self-test` or `--replay` is accepted. The replay requires the original local ignored tape; it is not a new standalone seeded strategy benchmark. No upstream source is edited.
+Only `--self-test` or `--replay` is accepted. Here `--replay` names **offline recorded-intent reconstruction in a fresh Singleplayer/Solo engine**, not an OpenFront game/UI mode or permission to run a model in Replay context. It requires the original local ignored tape; it is not a new standalone seeded strategy benchmark. No upstream source is edited.
 
 ## What exactly was scanned
 
@@ -83,6 +84,6 @@ The measurements are **post-hoc source evidence only**. No live geometry field, 
 ## Checks
 
 - Injected-array checks cover shared seeds/edge multiplicity, terrain counts, water exclusion, impassable exclusion, separate components/no diagonal shortcut, zero neutral reachability, map-edge/ref-zero handling and hard size rejection. These are geometry unit checks, not real model or gameplay outcomes.
-- Two final fetch-forbidden replay runs matched the original final hash/roster/all 90 physical inputs and produced byte-identical diagnostic JSON: SHA-256 **`15564e4a1695ed14bf692e1bbfc4e9f91db01303602eb848faac324692327d94`**.
+- Two final fetch-forbidden **Singleplayer/Solo recorded-intent reconstructions** matched the original final hash/roster/all 90 physical inputs and produced byte-identical schema-v2 diagnostic JSON: SHA-256 **`05e8d1e9b5a7ddc0697b8cda17d7648853233ed11c305cafa33cbf95b3d962c5`**. The v2 environment-label clarification and explicit Singleplayer assertion change no historical physical result or geometry.
 - `npm test`: **389/389** dependency-free checks passed on the coordinated pre-commit tree; the pinned historical replay also reproduced unchanged after the City-loop commit.
 - No API/browser/held-out-seed run, upstream edit or new competitive result. Generated reports and original run logs remain ignored.
