@@ -43,7 +43,7 @@ Raw ticks/10 would wrongly give0.3. The complete registry has16 alive participan
 
 Derived model state adds configured time remaining299.8s, hard deadline10200s, effective time remaining299.8s, land deficit0, eligible types, explicit rank/tie semantics, own share0.0091% and strict predicatefalse. It does not declare victory.
 
-The three mock normal turns4/12/22 grew52→326 tiles, final31/3s/gold2900, no City/Win/censored cap. Ignored evidence: `logs/benchmark-europe-v46-win-context-mock3.json`, wrapper `{parity,report}`. Historical20/160/300 actual replies/results remain unchanged and tagged4.5.3; no real v4.6 model/game result is established at publication.
+The three mock normal turns4/12/22 grew52→326 tiles, final31/3s/gold2900, no City/Win/censored cap. Ignored evidence: `logs/benchmark-europe-v46-win-context-mock3.json`, wrapper `{parity,report}`. Historical20/160/300 actual replies/results remain unchanged and tagged4.5.3; that initial source/API check had no real v4.6 judgment. A later [real20 opening](focus-easy-v4.6-validation.md) separately verified actual request delivery and tribe conquest, not deadline pressure or victory.
 
 ## Strict and unknown-aware details
 
