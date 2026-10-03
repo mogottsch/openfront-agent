@@ -11,7 +11,7 @@ function integer(value, name, min, max) {
   return value;
 }
 
-function classifyUnits(target, type, size) {
+function classifyUnits(target, type, size = null) {
   const units = target.units(type); // single-type overload works in both APIs
   if (!Array.isArray(units) || units.length > 4096)
     throw new Error("Unit enumeration unavailable or oversized");
@@ -29,16 +29,75 @@ function classifyUnits(target, type, size) {
     const id = integer(unit.id(), "unit ID", 0, Number.MAX_SAFE_INTEGER);
     if (ids.has(id)) throw new Error("Duplicate unit ID");
     ids.add(id);
-    const tile = integer(unit.tile(), "unit tile", 0, size - 1);
+    // Counts-only observation does not need positions or map dimensions.
+    const tile = size === null ? null : integer(unit.tile(), "unit tile", 0, size - 1);
     const constructing = unit.isUnderConstruction();
     if (constructing === true) counts.constructing_count++;
     else if (constructing === false) {
       counts.completed_count++;
       counts.completed_levels += integer(unit.level(), "unit level", 1, 1_000_000);
-      completedTiles.push(tile);
+      if (tile !== null) completedTiles.push(tile);
     } else throw new Error("Unit construction status unavailable");
   }
   return { counts, completedTiles };
+}
+
+function structuresTarget(game, targetId) {
+  integer(targetId, "target ID", 1, 4095);
+  const tick = integer(game.ticks(), "snapshot tick", 0, Number.MAX_SAFE_INTEGER);
+  const gameId = game.gameID();
+  const target = game.playerBySmallID(targetId);
+  if (typeof gameId !== "string" || !gameId) throw new Error("Game ID unavailable");
+  if (!target?.isPlayer() || target.smallID() !== targetId ||
+      target.isAlive() !== true || !["BOT", "NATION"].includes(target.type()))
+    throw new Error("Target must be a live tribe or nation");
+  const identity = target.id();
+  if (typeof identity !== "string" || !identity) throw new Error("Target identity unavailable");
+  return { tick, gameId, target, identity, targetType: target.type() };
+}
+
+function exactKeys(value, keys) {
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).length !== keys.length ||
+      !keys.every((key) => Object.hasOwn(value, key)))
+    throw new Error("Invalid neighbor structures shape");
+}
+
+/** Strict compact payload only: no positions, range, coverage or terrain. */
+export function validateNeighborStructures(value) {
+  exactKeys(value, ["source_tick", "city", "defense_post"]);
+  const source_tick = integer(value.source_tick, "source tick", 0, Number.MAX_SAFE_INTEGER);
+  const counts = (entry) => {
+    exactKeys(entry, ["completed_count", "constructing_count", "completed_levels"]);
+    const completed_count = integer(entry.completed_count, "completed count", 0, 4096);
+    const constructing_count = integer(entry.constructing_count, "constructing count", 0, 4096);
+    if (completed_count + constructing_count > 4096)
+      throw new Error("Neighbor structure count exceeds enumeration bound");
+    const completed_levels = integer(entry.completed_levels, "completed levels",
+      completed_count, completed_count * 1_000_000);
+    return { completed_count, constructing_count, completed_levels };
+  };
+  return { source_tick, city: counts(value.city), defense_post: counts(value.defense_post) };
+}
+
+/**
+ * Cheap, synchronous units-only facts for one live tribe/nation. Shared
+ * browser/core accessors; NO map, position, radius, worker or intent reads.
+ * A future caller must compare source_tick with its owning observation tick.
+ * Failure means unavailable, not zero buildings. Current raw schema is NOT
+ * changed here, and this helper is not yet wired into the live observation.
+ */
+export function observeNeighborStructures(game, targetId) {
+  const { tick, gameId, target, identity, targetType } = structuresTarget(game, targetId);
+  const city = classifyUnits(target, "City").counts;
+  const defense_post = classifyUnits(target, "Defense Post").counts;
+  const currentTarget = game.playerBySmallID(targetId);
+  if (game.ticks() !== tick || game.gameID() !== gameId ||
+      !currentTarget?.isPlayer() || currentTarget.smallID() !== targetId ||
+      currentTarget.id() !== identity || currentTarget.type() !== targetType ||
+      currentTarget.isAlive() !== true)
+    throw new Error("Neighbor-structures snapshot changed during observation");
+  return validateNeighborStructures({ source_tick: tick, city, defense_post });
 }
 
 /**

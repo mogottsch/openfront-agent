@@ -18,6 +18,24 @@ Source reviewed: sibling OpenFront commit `bb8af015b515b3b717bd4d901074c5f4c1664
 
 A City is infrastructure here, **not a claim of direct per-tile combat protection**. Post presence/levels do not imply complete target coverage. Two overlapping Posts count as two structures but do not count a frontier tile twice; `AttackExecution` asks whether at least one qualifying Post exists.
 
+## Cheap optional structures-only slice (not wired yet)
+
+`observeNeighborStructures(game, targetId)` enumerates just the target's current City and Defense Post units, checks activity/construction/ownership/levels and verifies unchanged game/tick/target identity/life. It does **not** read map dimensions, tiles, unit positions, terrain, range, configuration, workers or model/intent methods. This is the intended low-cost first slice for a future optional `neighbor.structures` field:
+
+```js
+{
+  source_tick: 100,
+  city: {completed_count: 1, constructing_count: 1, completed_levels: 3},
+  defense_post: {completed_count: 1, constructing_count: 0, completed_levels: 2}
+}
+```
+
+`validateNeighborStructures(value)` strictly accepts exactly these keys and integer counts. It returns a detached clean payload. Each type permits at most 4,096 enumerated active instances; completed levels must be zero if completed count is zero, otherwise at least the completed count. A constructing structure is not included in completed levels. Missing/extra keys, null/unknown status, fractional/string/negative counts, impossible level sums and exceeded limits fail; they are not normalized to zero.
+
+**Future integration must require `structures.source_tick` equal the owning observation's snapshot tick.** The payload omits repeated game/target IDs because it will belong to a known neighbor entry, but the getter verifies these identities before returning. A module failure should leave this optional information unavailable, not invent a defense-free neighbor. Use the same getter and validator in both browser and actual-engine facade; genuine parity tests must precede a rollout claim. Units-only counts omit Post placement/range/coverage and terrain, so even observed completed count zero is not a general no-defense or whole-conquest guarantee.
+
+This module/test iteration alone changes no shared raw/model schema, integration bridge, prompt or live controller. Full territory/frontier analysis below remains explicit and slow; do not call it per neighbor on the one-second loop.
+
 ## Compact proposed optional `neighbor.defenses` shape
 
 The standalone analyzer accepts `analyzeNeighborDefenses(game, {selfId, targetId})` and produces a snapshot-stamped result. The following payload is **illustrative, not an observed game**. Attach it as an optional field only in a future agreed raw schema version, after browser/core parity tests; it is rejected by today's raw schema.
@@ -61,4 +79,4 @@ The D one-send study in `docs/nation-one-send.md` showed a 2,000-mountain-tile t
 
 ### Checks
 
-`node --test tests/neighbor-defenses.test.mjs` covers mocked browser/core enumeration parity, counts versus upgraded levels, construction/inactivity/ownership, inclusive Euclidean distance, target-side measurement, overlapping coverage, edges versus unique tiles, terrain/ownership, missing metadata, budgets and snapshot changes. Tests explicitly forbid worker/send/model methods. These checks establish bounded calculation behavior; they do **not** establish genuine GameView/GameImpl parity, a real model decision, an emitted intent, conquest or competitive performance.
+`node --test tests/neighbor-defenses.test.mjs` covers mocked browser/core enumeration parity, counts versus upgraded levels, construction/inactivity/ownership, inclusive Euclidean distance, target-side measurement, overlapping coverage, edges versus unique tiles, terrain/ownership, missing metadata, budgets and snapshot changes. Tests explicitly forbid worker/send/model methods. Structures-only tests additionally forbid every map/configuration/unit-position accessor, compare its counts to the slow study/mocked browser/core enums, validate the strict compact payload and reject snapshot changes during enumeration. These checks establish bounded calculation behavior; they do **not** establish genuine GameView/GameImpl parity, a real model decision, an emitted intent, conquest or competitive performance.

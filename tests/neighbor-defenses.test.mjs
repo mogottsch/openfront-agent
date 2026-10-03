@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyzeNeighborDefenses } from "../web/neighbor-defenses.js";
+import { analyzeNeighborDefenses, observeNeighborStructures, validateNeighborStructures } from "../web/neighbor-defenses.js";
 
 // Dependency-free facades mirror SOURCE APIs. These are not actual-engine
 // parity tests or gameplay: browser units() excludes inactive units; core's
@@ -169,4 +169,112 @@ test("synchronous facts reject changed tick/game/identity and never call worker/
   assert.deepEqual(f.owners, before);
   assert.equal("conquest_probability" in result, false);
   assert.equal("garrison" in result, false);
+});
+
+const zeroStructures = () => ({
+  source_tick: 100,
+  city: { completed_count: 0, constructing_count: 0, completed_levels: 0 },
+  defense_post: { completed_count: 0, constructing_count: 0, completed_levels: 0 },
+});
+
+test("cheap structure facts touch NO map/position/config/worker/model and count authoritative zero", () => {
+  const f = fixture();
+  for (const name of ["width", "height", "ref", "ownerID", "terrainType", "isLand",
+    "isImpassable", "neighbors", "config", "sendAttack", "sendBuild", "buildables", "decide"]) {
+    f.game[name] = () => { throw new Error(`Forbidden ${name}`); };
+  }
+  assert.deepEqual(observeNeighborStructures(f.game, 2), zeroStructures());
+  const city = f.unit("City", 4, { level: 3 });
+  const post = f.unit("Defense Post", 5, { constructing: true });
+  city.tile = post.tile = () => { throw new Error("No positions necessary for counts"); };
+  f.units.push(city, post);
+  assert.deepEqual(observeNeighborStructures(f.game, 2), {
+    source_tick: 100,
+    city: { completed_count: 1, constructing_count: 0, completed_levels: 3 },
+    defense_post: { completed_count: 0, constructing_count: 1, completed_levels: 0 },
+  });
+});
+
+test("cheap counts match explicit slow study and mocked browser/core views for tribes/nations", () => {
+  for (const type of ["BOT", "NATION"]) {
+    const results = [];
+    for (const browser of [true, false]) {
+      const f = fixture(undefined, { browser });
+      f.target.type = () => type;
+      f.units.push(f.unit("City", 4, { level: 3 }),
+        f.unit("City", 5, { constructing: true }), f.unit("City", 6, { active: false }),
+        f.unit("Defense Post", 7, { level: 2 }),
+        f.unit("Defense Post", 8, { constructing: true }),
+        f.unit("Defense Post", 9, { active: false }));
+      const result = observeNeighborStructures(f.game, 2);
+      const slow = f.analyze();
+      assert.deepEqual(result.city, slow.city);
+      assert.deepEqual(result.defense_post, { completed_count: slow.defense_post.completed_count,
+        constructing_count: slow.defense_post.constructing_count,
+        completed_levels: slow.defense_post.completed_levels });
+      results.push(result);
+    }
+    assert.deepEqual(...results);
+  }
+});
+
+test("cheap snapshots reject changes during enumeration, replaced identity and missing/unknown metadata", () => {
+  for (const change of [
+    (f) => f.setTick(101), (f) => f.setGame("new-game"), (f) => f.setAlive(false),
+    (f) => { f.target.id = () => "new-target"; },
+    (f) => { f.target.type = () => "HUMAN"; },
+    (f) => { f.game.playerBySmallID = () => undefined; },
+  ]) {
+    const f = fixture(undefined, { browser: false });
+    const units = f.target.units;
+    f.target.units = (...args) => { const result = units(...args); change(f); return result; };
+    assert.throws(() => observeNeighborStructures(f.game, 2), /snapshot changed/);
+  }
+  const f = fixture(undefined, { browser: false });
+  const city = f.unit("City", 4);
+  f.units.push(city);
+  city.isActive = () => undefined;
+  assert.throws(() => observeNeighborStructures(f.game, 2), /identity\/activity/);
+  city.isActive = () => true;
+  city.isUnderConstruction = () => undefined;
+  assert.throws(() => observeNeighborStructures(f.game, 2), /construction/);
+  city.isUnderConstruction = () => false;
+  city.level = () => undefined;
+  assert.throws(() => observeNeighborStructures(f.game, 2), /unit level/);
+  assert.throws(() => observeNeighborStructures(f.game, 0), /target ID/);
+  const missing = fixture();
+  missing.target.units = undefined;
+  assert.throws(() => observeNeighborStructures(missing.game, 2));
+});
+
+test("compact structure validator rejects extra/missing/noninteger/inconsistent counts, keeps zeros", () => {
+  assert.deepEqual(validateNeighborStructures(zeroStructures()), zeroStructures());
+  const invalid = [null, [], {}, { ...zeroStructures(), terrain: {} },
+    { ...zeroStructures(), source_tick: -1 }, { ...zeroStructures(), source_tick: 1.5 },
+    { ...zeroStructures(), source_tick: "100" }, { ...zeroStructures(), source_tick: Infinity }];
+  for (const value of [undefined, null, "0", 0.5, -1, NaN, Infinity, 4097]) {
+    const entry = zeroStructures();
+    entry.city.completed_count = value;
+    invalid.push(entry);
+  }
+  for (const change of [
+    (v) => { delete v.defense_post; },
+    (v) => { delete v.city.completed_levels; },
+    (v) => { v.city.range_tiles = 30; },
+    (v) => { v.city.completed_levels = 1; }, // zero completed cannot have levels
+    (v) => { v.city.completed_count = 1; }, // completed level sum must be >= count
+    (v) => { v.city.constructing_count = -1; },
+    (v) => { v.city.constructing_count = "1"; },
+    (v) => { v.city.completed_count = 4096; v.city.completed_levels = 4096; v.city.constructing_count = 1; },
+    (v) => { v.city.completed_count = 1; v.city.completed_levels = 1_000_001; },
+  ]) {
+    const value = zeroStructures();
+    change(value);
+    invalid.push(value);
+  }
+  for (const value of invalid) assert.throws(() => validateNeighborStructures(value));
+  const original = zeroStructures();
+  const parsed = validateNeighborStructures(original);
+  assert.notEqual(parsed, original);
+  assert.notEqual(parsed.city, original.city);
 });
