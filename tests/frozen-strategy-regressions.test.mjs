@@ -164,7 +164,7 @@ test("frozen 08:35:10: already attacked tribe246 before Jev opened tribe222", ()
   const row = frozen.firstSpread;
   const request = buildRequest(observationAt(row));
   const q = request.questions.action;
-  assert.equal(POLICY_VERSION, "land-strategy-v4.5.3-territory-survival-buffer");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.6-win-context");
   assert.equal(row.oldChoice, "attack_player_222_10");
   assert.equal(
     request.state.neighbors.find((p) => p.id === 246).our_active_attack_troops,
@@ -607,4 +607,141 @@ test("synthetic border conditions distinguish mixed exits, multiple contacts, al
   assert.equal(state.border.all_edges_touch_one_unallied_player, true);
   assert.equal(state.border.only_border_player_id, 11);
   assert.equal(state.self.one_successful_tile_loss_can_trigger_elimination, false);
+});
+
+// EXACT LOCAL raw land input from row300 at real snapshot tick2991 of ignored
+// logs/jev-hybrid-europe-easy-v453-full300.json. Historical HYBRID branch wait
+// was honored; no City/nation intent came from a conditional child preference.
+// Its new win_context BELOW is entirely SYNTHETIC regression data, NOT a
+// measured pre-Win global rank/leader/clock summary. In particular, the real
+// final3011 Swiss86809 must NEVER be attached as an observed2991 leader.
+const fullMatchLate2991 = {
+  self: { id: 1, troops: 82709, troop_capacity: 82725, territory_tiles: 18525, gold: "305750" },
+  border: { total_edges: 2488, wilderness_edges: 0, player_edges: 80, water_edges: 2408, blocked_edges: 0 },
+  incoming_attacks: [], outgoing_attacks: [],
+  neighbors: [
+    { ...n(2, "nation", 25, 32336, 76630, 41657),
+      structures: { source_tick: 2991, city: structureCounts(1), defense_post: structureCounts() } },
+    { ...n(3, "nation", 55, 40160, 106148, 81806),
+      structures: { source_tick: 2991, city: structureCounts(1), defense_post: structureCounts() } },
+  ],
+};
+const lateWaitHistory = { snapshot_tick: 2991, route: "/hybrid-decision",
+  branch_choice: "wait", normal_intent_queued: false };
+const syntheticWinContext = (overrides = {}) => ({
+  game_id: "synthetic-goal-regression", source_tick: 2991,
+  rule: "ffa_largest_alive_territory_at_timer_or_strict_share",
+  elapsed_seconds: 299, timer_seconds: 300,
+  share_threshold_percent: 80, non_fallout_land_tiles: 568335,
+  eligible_alive_count: 4, self_rank_by_tiles: 4,
+  leading_territory_tiles: 90000, tied_leader_count: 1,
+  leader: { id: 4, type: "tribe" }, ...overrides,
+});
+
+function assertEveryMockChoiceUnchanged(withContext, baseline) {
+  const q = withContext.questions.action;
+  assert.deepEqual(q.criteria, baseline.questions.action.criteria);
+  assert.deepEqual(withContext.state.strategy, baseline.state.strategy);
+  assert.deepEqual(q.instructions.slice(0, baseline.questions.action.instructions.length),
+    baseline.questions.action.instructions);
+  for (const choice of Object.keys(q.criteria)) {
+    const answer = response(choice, q.criteria);
+    assert.equal(parseDecision(answer, q.criteria).action, choice);
+    assert.deepEqual(parseDecision(answer, q.criteria).probabilities, answer.answers.action.probabilities);
+  }
+}
+
+test("real late2991 local facts + SYNTHETIC deadline/rank keep historical wait and all offered nation sizes", () => {
+  const baseline = buildRequest(fullMatchLate2991);
+  const o = structuredClone(fullMatchLate2991);
+  o.win_context = syntheticWinContext();
+  const request = buildRequest(o);
+  const context = request.state.win_context;
+  assert.equal(context.effective_deadline_remaining_seconds, 1);
+  assert.equal(context.configured_timer_remaining_seconds, 1);
+  assert.equal(context.territory_tiles_behind_leader, 71475);
+  assert.deepEqual(context.eligible_types, ["human", "nation", "tribe"]);
+  assert.deepEqual(context.leader, { id: 4, type: "tribe" }); // synthetic, not inferred global state
+  assert.match(context.rank_semantics, /competition_one_plus_strictly_more_tiles_not_tie_winner/);
+  assert.equal(lateWaitHistory.branch_choice, "wait");
+  assert.equal(lateWaitHistory.normal_intent_queued, false);
+  assert.equal(request.questions.action.criteria.attack_player_4_10, undefined); // leader not reachable/offered
+  assert.deepEqual(Object.keys(request.questions.action.criteria), ["wait",
+    ...[2, 3].flatMap((id) => [10, 20, 30, 40, 50].map((p) => `attack_player_${id}_${p}`))]);
+  assertEveryMockChoiceUnchanged(request, baseline);
+  for (const neighbor of request.state.neighbors)
+    assert.equal(neighbor.structures.defense_post.completed_count, 0); // known Post0, NOT unknown Posts
+  assert.match(request.questions.action.instructions.at(-1), /waiting while behind can spend the remaining opportunity/);
+  // Aged/expired simulated deadline is NOT a strategic action veto or an
+  // automatic Win event. Existing controller/session end guards remain separate.
+  for (const elapsed_seconds of [299.9, 300, 301]) {
+    // These aged frames are SYNTHETIC too, not later measured local states.
+    // Advance all source stamps coherently rather than keep2991 under a
+    // logically future simulation clock.
+    const source_tick = Math.round(elapsed_seconds * 10) + 1;
+    for (const neighbor of o.neighbors) neighbor.structures.source_tick = source_tick;
+    o.win_context = syntheticWinContext({ elapsed_seconds, source_tick });
+    const aged = buildRequest(o);
+    const withoutContext = structuredClone(o);
+    delete withoutContext.win_context;
+    assert.ok(Math.abs(aged.state.win_context.effective_deadline_remaining_seconds - Math.max(0, 300 - elapsed_seconds)) < 1e-8);
+    assertEveryMockChoiceUnchanged(aged, buildRequest(withoutContext));
+  }
+});
+
+test("synthetic timer-off hard limit, competition ties and strict share never force an offered choice", () => {
+  const o = syntheticNation();
+  const baseline = buildRequest(o);
+  const variants = [
+    syntheticWinContext({ source_tick: 100010, elapsed_seconds: 10000, timer_seconds: null,
+      eligible_alive_count: 3, self_rank_by_tiles: 2 }),
+    syntheticWinContext({ eligible_alive_count: 3, self_rank_by_tiles: 1,
+      leading_territory_tiles: 2500, tied_leader_count: 2, leader: null }),
+    syntheticWinContext({ eligible_alive_count: 3, self_rank_by_tiles: 1,
+      leading_territory_tiles: 2500, leader: { id: 1, type: "human" },
+      non_fallout_land_tiles: 10000, share_threshold_percent: 25 }),
+    syntheticWinContext({ eligible_alive_count: 3, self_rank_by_tiles: 1,
+      leading_territory_tiles: 2500, leader: { id: 1, type: "human" },
+      non_fallout_land_tiles: 10000, share_threshold_percent: 24 }),
+    syntheticWinContext({ eligible_alive_count: 3, self_rank_by_tiles: 2,
+      non_fallout_land_tiles: 0 }),
+    syntheticWinContext({ eligible_alive_count: 3, self_rank_by_tiles: 2,
+      share_threshold_percent: 0 }), // source-valid native overtime threshold
+  ];
+  for (const [index, context] of variants.entries()) {
+    o.win_context = context;
+    const request = buildRequest(o);
+    const derived = request.state.win_context;
+    assertEveryMockChoiceUnchanged(request, baseline);
+    if (index === 0) {
+      assert.equal(derived.configured_timer_remaining_seconds, null);
+      assert.equal(derived.hard_deadline_seconds, 10200);
+      assert.equal(derived.effective_deadline_seconds, 10200);
+      assert.equal(derived.effective_deadline_remaining_seconds, 200);
+    } else if (index === 1) {
+      assert.equal(derived.self_rank_by_tiles, 1);
+      assert.equal(derived.leader, null);
+      assert.equal(derived.tied_leader_count, 2);
+      assert.equal(derived.territory_tiles_behind_leader, 0);
+      assert.match(request.questions.action.instructions.at(-1), /Competition rank 1 can be a tie/);
+    } else if (index === 2) {
+      assert.equal(derived.our_territory_share_percent, 25);
+      assert.equal(derived.our_share_exceeds_threshold, false); // equality NOT strict share
+    } else if (index === 3) {
+      assert.equal(derived.our_share_exceeds_threshold, true);
+      assert.match(request.questions.action.instructions.at(-1), /do not predict the winner/);
+    } else if (index === 4) {
+      assert.equal(derived.our_territory_share_percent, null);
+      assert.equal(derived.our_share_exceeds_threshold, true); // exact self*100 > 0*threshold, NOT a ratio or winner promise
+    } else {
+      assert.equal(derived.share_threshold_percent, 0);
+      assert.equal(derived.our_share_exceeds_threshold, true);
+      assert.equal(derived.self_rank_by_tiles, 2); // strict share alone does not select our actor
+      assert.match(request.questions.action.instructions.at(-1), /do not predict the winner/);
+    }
+  }
+  delete o.win_context;
+  const absent = buildRequest(o);
+  assert.equal(Object.hasOwn(absent.state, "win_context"), false);
+  assert.deepEqual(absent.questions, baseline.questions);
 });

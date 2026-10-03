@@ -8,6 +8,29 @@ import {
 } from "../web/observation.js";
 import { observation } from "./fixtures/land.mjs";
 
+test("optional same-snapshot win facts clone and derive without changing land offers",()=>{
+  const raw=observation();const original=buildActions(raw);
+  assert.equal(Object.hasOwn(modelState(raw),"win_context"),false);
+  raw.win_context={game_id:"solo-win-test",source_tick:100,
+    rule:"ffa_largest_alive_territory_at_timer_or_strict_share",elapsed_seconds:299,
+    timer_seconds:300,share_threshold_percent:80,non_fallout_land_tiles:10000,
+    eligible_alive_count:3,self_rank_by_tiles:3,leading_territory_tiles:300,
+    tied_leader_count:1,leader:{id:3,type:"human"}};
+  const clean=validateObservation(raw),state=modelState(raw);
+  assert.equal(state.win_context.effective_deadline_remaining_seconds,1);
+  assert.equal(state.win_context.territory_tiles_behind_leader,248);
+  assert.deepEqual(buildActions(raw),original);
+  raw.win_context.leader.type="tribe";
+  assert.equal(clean.win_context.leader.type,"human");
+  assert.throws(()=>validateObservation(raw)); // known neighbor identity mismatch
+  const mismatched=structuredClone(clean);mismatched.neighbors[0].structures={source_tick:101,
+    city:{completed_count:0,constructing_count:0,completed_levels:0},
+    defense_post:{completed_count:0,constructing_count:0,completed_levels:0}};
+  assert.throws(()=>validateObservation(mismatched));
+  const extra=structuredClone(clean);extra.win_context.effective_deadline_remaining_seconds=1;
+  assert.throws(()=>validateObservation(extra)); // derived values not raw API
+});
+
 test("computes border shares, reserves, density, and incoming totals without asking Jev to divide", () => {
   const raw = observation();
   raw.incoming_attacks.push(

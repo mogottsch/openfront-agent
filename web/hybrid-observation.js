@@ -79,6 +79,9 @@ export function validateHybridInput(input) {
   if (land.neighbors.some(n => n.structures &&
       n.structures.source_tick !== input.snapshot_tick))
     throw new Error("Neighbor structures do not share the hybrid observation tick");
+  if (land.win_context && (land.win_context.source_tick !== input.snapshot_tick ||
+      land.win_context.game_id !== input.game_id))
+    throw new Error("Win context does not share the hybrid game/tick");
   const mechanics = input.city_mechanics;
   if (
     !only(mechanics, ["troop_capacity_gain_display", "construction_ticks"]) ||
@@ -295,7 +298,8 @@ export function hybridModelState(input) {
     ...modelState(o.land),
     game_id: o.game_id,
     snapshot_tick: o.snapshot_tick,
-    city_mechanics: o.city_mechanics,
+    city_mechanics: { ...o.city_mechanics,
+      ...(o.land.win_context ? { construction_seconds: o.city_mechanics.construction_ticks / 10 } : {}) },
     economy: {
       available_gold: o.building?.available_gold ?? o.land.self.gold ?? null,
       cities: o.building?.city_counts ?? { owned: null, pending: null },

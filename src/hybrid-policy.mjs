@@ -10,7 +10,7 @@ import {
 } from "../web/hybrid-observation.js";
 import { buildRequest as buildLandRequest, parseDecision } from "./policy.mjs";
 
-export const HYBRID_POLICY_VERSION = "hybrid-branch-v3-defense-post-proposed";
+export const HYBRID_POLICY_VERSION = "hybrid-branch-v4-win-context";
 
 export function buildHybridRequest(input, model = "jev-latest") {
   const clean = validateHybridInput(input);
@@ -21,6 +21,7 @@ export function buildHybridRequest(input, model = "jev-latest") {
       type: "choice",
       instructions: [
         "Choose our immediate action family in OpenFront. Decide among waiting, a normal land attack, a geometric coastal transport-boat candidate with a worker-confirmed launch source, building one City, or building one Defense Post only when offered. Preserve survival and growth while gaining territory and developing our economy; a branch being feasible is not a command to take it.",
+        ...(clean.land.win_context ? ["state.win_context gives the actual native territory victory rule, engine time and complete eligible standings summary, including alive tribes. Use the same goal as the land Choice: reserve, gold, City capacity and survival are not territorial victory. Compare time left with City construction_seconds and useful troop growth, feasible territorial gains and safety. A competition-rank tie or share predicate is not a guaranteed winner. Urgency neither authorizes withheld actions nor predicts conquest; honor wait/save_gold."] : []),
         "The optional objective is a strategic suggestion, not a game rule or legal permission. Use current reserve, existing attacks, pressure, available gold, City costs/capacity benefit, Defense Post potential coverage and naval fleet/coast facts. A post's geometric contact coverage is not an observed attack route or guaranteed survival. An island with no land target cannot expand further without a boat. Worker-confirmed spawn is not guaranteed travel, landing or conquest. Other future moves and unprovided site effects are unknown; candidate omissions are disclosed.",
         "If choosing a branch, the independently answered land_action, city_site, boat_action or post_site Choice names the actual candidate; each can still choose wait/save gold. Never infer that an option was silently filtered because of strategic priority.",
       ],

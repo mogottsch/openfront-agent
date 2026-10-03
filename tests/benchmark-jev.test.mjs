@@ -70,6 +70,21 @@ function fixture() {
   return { game, me, owners, advance: () => tick++ };
 }
 
+// Explicit synthetic Win API fixture. Actual elapsed differs from tick/10;
+// source registry contains every alive type, including native BOT tribes.
+function withWinApis(f, { elapsed = 9.9, timer = 5, threshold = 80 } = {}) {
+  const config = { ...f.game.config(), isReplay: () => false,
+    gameConfig: () => ({ gameType: "Singleplayer", gameMode: "Free For All", maxTimerValue: timer }),
+    percentageTilesOwnedToWin: (seconds) => { assert.equal(seconds, elapsed); return threshold; } };
+  f.game.config = () => config;
+  f.game.elapsedGameSeconds = () => elapsed;
+  f.game.numLandTiles = () => 20;
+  f.game.numTilesWithFallout = () => 2;
+  f.game.players = () => [1, 2, 3].map((id) => f.game.playerBySmallID(id)).filter((p) => p.isAlive());
+  for (const id of [1, 2, 3]) f.game.playerBySmallID(id).id = () => `synthetic-player-${id}`;
+  return config;
+}
+
 test("core observation mirrors v4.1 border units and all neighbor attackers", () => {
   const f = fixture();
   const { observation: o, actions } = observeCore(f.game, f.me);
@@ -95,8 +110,9 @@ test("core observation mirrors v4.1 border units and all neighbor attackers", ()
   assert.equal(actions.attack_player_2_30, undefined); // tribe ceiling
 });
 
-test("core observation is field-for-field equal to browser including same-tick structures", async () => {
-  const { game, me } = fixture();
+test("core observation is field-for-field equal to browser including same-tick structures and Win context", async () => {
+  const f = fixture(); const { game, me } = f;
+  withWinApis(f);
   game.gameID=()=>"structure-parity-001";
   for(const id of [1,2,3]){
     const core=game.playerBySmallID(id);core.id=()=>`player-${id}`;
@@ -130,6 +146,8 @@ test("core observation is field-for-field equal to browser including same-tick s
   }
   browser.myPlayer = () => wrapped.get(me.smallID());
   browser.playerBySmallID = (id) => wrapped.get(id);
+  // GameView registry includes dead views; Core.players() is alive-only.
+  browser.players = () => [...wrapped.values(), { isPlayer: () => true, isAlive: () => false }];
   const adapter = createGameAdapter({ game: browser,
     read: () => ({ tick: game.ticks(), ready: true, ended: false }),
     sendAttack: () => { throw new Error("read-only test"); },
@@ -140,6 +158,11 @@ test("core observation is field-for-field equal to browser including same-tick s
   assert.deepEqual(browserObservation.neighbors[0].structures,{source_tick:100,
     city:{completed_count:1,constructing_count:1,completed_levels:2},
     defense_post:{completed_count:1,constructing_count:0,completed_levels:1}});
+  assert.equal(browserObservation.win_context.source_tick, 100);
+  assert.equal(browserObservation.win_context.elapsed_seconds, 9.9);
+  assert.equal(browserObservation.win_context.eligible_alive_count, 3);
+  assert.equal(browserObservation.win_context.tied_leader_count, 3);
+  assert.equal(browserObservation.win_context.leader, null);
 });
 
 test("plain core needs actual game ID context for known-zero structures; absence stays unknown",()=>{
@@ -152,6 +175,66 @@ test("plain core needs actual game ID context for known-zero structures; absence
   assert.throws(()=>observeCore(f.game,f.me,{gameId:"other-game"}),/changed identity/);
   target.units=()=>{f.advance();return [];};
   assert.throws(()=>observeCore(f.game,f.me,{gameId:"actual-core-game"}),/changed during observation/);
+});
+
+test("read-only actual-ID core facade adds synthetic BOT-eligible Win summary with source arithmetic", () => {
+  const f = fixture(); withWinApis(f, { threshold: 70 });
+  f.game.playerBySmallID(2).numTilesOwned = () => 5;
+  f.game.playerBySmallID(3).numTilesOwned = () => 3;
+  const legacy = observeCore(f.game, f.me);
+  assert.equal(Object.hasOwn(legacy.observation, "win_context"), false); // no actual game ID
+  const o = observeCore(f.game, f.me, { gameId: "synthetic-core-win" }).observation;
+  assert.deepEqual(o.win_context, { game_id: "synthetic-core-win", source_tick: 100,
+    rule: "ffa_largest_alive_territory_at_timer_or_strict_share", elapsed_seconds: 9.9,
+    timer_seconds: 300, share_threshold_percent: 70, non_fallout_land_tiles: 18,
+    eligible_alive_count: 3, self_rank_by_tiles: 3, leading_territory_tiles: 5,
+    tied_leader_count: 1, leader: { id: 2, type: "tribe" } });
+  assert.equal(f.game.gameID, undefined); // facade does not mutate core
+  const state = modelState(o).win_context;
+  assert.deepEqual(state.eligible_types, ["human", "nation", "tribe"]);
+  assert.equal(state.configured_timer_remaining_seconds, 290.1);
+  assert.equal(state.territory_tiles_behind_leader, 4);
+  assert.equal(state.hard_deadline_seconds, 10200);
+  assert.deepEqual(observeCore(f.game, f.me, { gameId: "synthetic-core-win" }).actions, legacy.actions);
+});
+
+test("unknown/unsupported Win APIs omit context without inventing rank, zero clock or unlimited timer", () => {
+  for (const missing of ["players", "elapsedGameSeconds", "numTilesWithFallout", "isReplay", "replay", "mode", "overflow"]) {
+    const f = fixture(), config = withWinApis(f);
+    if (["players", "elapsedGameSeconds", "numTilesWithFallout"].includes(missing)) delete f.game[missing];
+    if (missing === "isReplay") delete config.isReplay;
+    if (missing === "replay") config.isReplay = () => true;
+    if (missing === "mode") config.gameConfig = () => ({ gameType: "Singleplayer", gameMode: "Team" });
+    if (missing === "overflow") f.game.players = () => Array(4096).fill(f.me);
+    const o = observeCore(f.game, f.me, { gameId: "synthetic-core-win" }).observation;
+    assert.equal(Object.hasOwn(o, "win_context"), false, missing);
+    assert.equal(Object.hasOwn(modelState(o), "win_context"), false, missing);
+  }
+});
+
+test("core Win context captures configured timer-off, legitimate zero threshold and zero denominator", () => {
+  const f = fixture(); withWinApis(f, { timer: null, threshold: 0 });
+  f.game.numLandTiles = () => 2;
+  const o = observeCore(f.game, f.me, { gameId: "synthetic-core-win" }).observation;
+  assert.equal(o.win_context.timer_seconds, null);
+  assert.equal(o.win_context.share_threshold_percent, 0);
+  assert.equal(o.win_context.non_fallout_land_tiles, 0);
+  const w = modelState(o).win_context;
+  assert.equal(w.configured_timer_remaining_seconds, null);
+  assert.equal(w.effective_deadline_seconds, 10200);
+  assert.equal(w.our_territory_share_percent, null);
+  assert.equal(w.our_share_exceeds_threshold, true); // strict positive*100>0
+});
+
+test("core observation refuses tick drift during Win registry read and omits incoherent same-tick registry", () => {
+  const f = fixture(); withWinApis(f);
+  const players = f.game.players;
+  f.game.players = () => { f.advance(); return players(); };
+  assert.throws(() => observeCore(f.game, f.me, { gameId: "synthetic-core-win" }), /Game advanced during observation/);
+  const g = fixture(); withWinApis(g);
+  let reads = 0; const registry = g.game.players;
+  g.game.players = () => { if (++reads === 2) g.game.playerBySmallID(2).id = () => "changed-identity"; return registry(); };
+  assert.equal(Object.hasOwn(observeCore(g.game, g.me, { gameId: "synthetic-core-win" }).observation, "win_context"), false);
 });
 
 test("core observation rejects missing, numeric and negative gold instead of omitting the fact", () => {

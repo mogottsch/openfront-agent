@@ -104,6 +104,26 @@ function fixture() {
   };
 }
 
+test("browser Goal context reads actual engine time/all alive registry, not only border contacts",async()=>{
+  const f=fixture();const cfg={maxTroops:p=>p.capacity,isReplay:()=>false,
+    gameConfig:()=>({gameType:"Singleplayer",gameMode:"Free For All",maxTimerValue:5}),
+    percentageTilesOwnedToWin:()=>80};
+  f.game.config=()=>cfg;f.game.players=()=>[...f.players.values()];
+  f.game.elapsedGameSeconds=()=>3; // ticks100 minus real spawn offset, not10
+  f.game.numLandTiles=()=>8;f.game.numTilesWithFallout=()=>0;
+  const snap=await f.adapter.observe();
+  assert.equal(snap.observation.win_context.source_tick,100);
+  assert.equal(snap.observation.win_context.elapsed_seconds,3);
+  assert.equal(snap.observation.win_context.eligible_alive_count,3);
+  assert.equal(snap.observation.win_context.self_rank_by_tiles,1);
+  assert.equal(snap.observation.win_context.tied_leader_count,3);
+  assert.equal(snap.observation.win_context.leader,null);
+  validateObservation(snap.observation);
+  cfg.isReplay=()=>true;
+  assert.equal(Object.hasOwn((await f.adapter.observe()).observation,"win_context"),false);
+  assert.deepEqual(f.sent,[]); // no goal-driven intent
+});
+
 test("observes four cardinal contacts without including diagonal players", async () => {
   const f = fixture();
   const snap = await f.adapter.observe();

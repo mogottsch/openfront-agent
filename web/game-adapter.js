@@ -2,6 +2,7 @@
 // attack intent through the small TypeScript bridge. No strategy lives here.
 import { ATTACK_FRACTIONS, fractionsForTarget } from "./observation.js";
 import { observeNeighborStructures } from "./neighbor-defenses.js";
+import { observeWinContext } from "./win-context.js";
 
 export function summarizeBorders(game, playerId, borderTiles) {
   const border = {
@@ -307,6 +308,10 @@ export function createGameAdapter({ game, read, sendAttack }) {
           retreating: a.retreating,
         })),
       };
+      const winContext = observeWinContext(game, me.smallID(), { expectedTick: tick });
+      if (winContext && game.ticks() === tick &&
+          me.numTilesOwned() === observation.self.territory_tiles)
+        observation.win_context = winContext;
       // Ask the real worker about immunity/friendliness/adjacency. null skips
       // expensive buildable-unit calculations. No approximation of game rules.
       await Promise.all(

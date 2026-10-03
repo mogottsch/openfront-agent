@@ -1,9 +1,10 @@
 // Read core Game/Player at a turn boundary into the shared browser contract.
-// Optional source-stamped structures require a known actual game ID context;
-// absent API/context means unknown, never a fabricated zero-building count.
+// Optional source-stamped structures and Win facts require actual game IDs;
+// absent APIs/context mean unknown, never invented building counts or ranks.
 import { setTimeout as sleepMs } from "node:timers/promises";
 import { summarizeBorders } from "../web/game-adapter.js";
 import { observeNeighborStructures } from "../web/neighbor-defenses.js";
+import { observeWinContext } from "../web/win-context.js";
 import {
   buildActions,
   fractionsForTarget,
@@ -79,8 +80,16 @@ export function observeCore(game, me, {gameId = null} = {}) {
       incoming_attacks: attacksAgainst(other),
     };
   });
+  const self = { ...stats(game, me), gold: gold.toString() };
+  // Reuse the read-only actual-ID facade; no invented ID, elapsed time,
+  // timer-off value or sampled leaderboard when the source is unavailable.
+  const context = structuresGame && game.playerBySmallID(self.id) === me ?
+    observeWinContext(structuresGame, self.id, { expectedTick: tick }) : undefined;
+  const winContext = context && context.source_tick === tick &&
+    game.playerBySmallID(self.id) === me && me.numTilesOwned() === self.territory_tiles ? context : undefined;
   const observation = validateObservation({
-    self: { ...stats(game, me), gold: gold.toString() },
+    self,
+    ...(winContext ? { win_context: winContext } : {}),
     border,
     neighbors,
     incoming_attacks: attacksAgainst(me),

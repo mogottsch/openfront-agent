@@ -7,8 +7,9 @@ export const TRIBE_ATTACK_FRACTIONS = Object.freeze([0.1, 0.2]);
 export const fractionsForTarget = (type) =>
   type === "tribe" ? TRIBE_ATTACK_FRACTIONS : ATTACK_FRACTIONS;
 export const OBSERVATION_ERROR =
-  "Invalid land observation (self, border, neighbors, incoming_attacks, outgoing_attacks, optional tribe_focus)";
+  "Invalid land observation (self, border, neighbors, incoming_attacks, outgoing_attacks, optional tribe_focus/win_context)";
 import { validateNeighborStructures } from "./neighbor-defenses.js";
+import { validateWinContext, deriveWinContext } from "./win-context.js";
 
 const TYPES = ["human", "nation", "tribe"];
 const fail = () => {
@@ -41,6 +42,7 @@ export function validateObservation(value) {
     "neighbors",
     "incoming_attacks",
     "outgoing_attacks",
+    ...(Object.hasOwn(value ?? {}, "win_context") ? ["win_context"] : []),
   ];
   exact(
     value,
@@ -164,6 +166,14 @@ export function validateObservation(value) {
       incoming_attacks: attackList(n.incoming_attacks, n.id) };
   });
   if (sharedEdges !== value.border.player_edges) fail();
+  let winContext;
+  if (Object.hasOwn(value, "win_context")) {
+    winContext = validateWinContext(value.win_context, value.self);
+    if (structuresTick !== null && winContext.source_tick !== structuresTick) fail();
+    const leaderNeighbor = neighbors.find(n => n.id === winContext.leader?.id);
+    if (leaderNeighbor && (leaderNeighbor.type !== winContext.leader.type ||
+        leaderNeighbor.territory_tiles !== winContext.leading_territory_tiles)) fail();
+  }
   let focus;
   if (Object.hasOwn(value, "tribe_focus")) {
     focus = value.tribe_focus;
@@ -252,6 +262,7 @@ export function validateObservation(value) {
     incoming_attacks: incoming,
     outgoing_attacks: outgoing,
     ...(Object.hasOwn(value, "tribe_focus") ? { tribe_focus: focus } : {}),
+    ...(winContext ? { win_context: winContext } : {}),
   };
 }
 
@@ -374,6 +385,7 @@ export function modelState(observation) {
     o.border.player_edges === o.border.total_edges && o.neighbors.length === 1 &&
     o.neighbors[0].relationship === "unallied" ? o.neighbors[0].id : null;
   return {
+    ...(o.win_context ? { win_context: deriveWinContext(o.win_context, o.self) } : {}),
     self: {
       ...stats(o.self),
       active_incoming_troops: incomingFrom(),

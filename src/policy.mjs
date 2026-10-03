@@ -7,7 +7,7 @@ import {
   MAX_ACTIONS,
 } from "../web/observation.js";
 export { validateObservation, OBSERVATION_ERROR };
-export const POLICY_VERSION = "land-strategy-v4.5.3-territory-survival-buffer";
+export const POLICY_VERSION = "land-strategy-v4.6-win-context";
 
 // Only describe facts already in the approved land observation. These notes
 // never filter, rerank, resize or replace a model-selected legal action.
@@ -111,6 +111,9 @@ export function buildRequest(observation, model = "jev-latest") {
           "neighbors[].structures, when present, reports snapshot-stamped completed/constructing City/Post instance counts and separate completed levels. Missing means UNKNOWN, not zero. Constructing is not completed strength; counts reveal no placement, radius/coverage, terrain, future strength or conquest guarantee. City counts are infrastructure, not direct combat protection.",
           "Take all attackable bordering tribes before attacking any nation. Then attack only if confident we can FINISH conquering the whole nation, ideally in one send; aggression can create lasting, not permanent, hostility. Currently available troops or committed-to-defender ratio do NOT measure total territorial resistance or full-conquest probability. Wait rather than a token nation raid without a credible finish.",
           "Under incoming pressure, compare our reserve with the attacker's reserve PLUS its active incoming force via attackers[].our_reserve_is_stronger; consider all attackers. Do not full-send or chain large sends or assume rescue. Top-level attackers threaten us; a neighbor's attackers target that neighbor. Outgoing troops are not home defense. Waiting leaves current attacks running. Counts are display units; ratios/remaining reserves are calculated. No city-defense or encirclement strategy is assumed.",
+          ...(state.win_context ? [
+            "With win_context, pursue native match victory rather than stockpiling. Use effective_deadline_remaining_seconds, eligible rank/leader facts and territory_tiles_behind_leader: waiting while behind can spend the remaining opportunity. Compare feasible legal progress with survival; urgency neither guarantees conquest nor authorizes withheld targets. Competition rank 1 can be a tie; abundant resources or our_share_exceeds_threshold do not predict the winner. Engine time is not wall time, and timer-off still has a hard deadline. Only an actual Win event confirms outcome.",
+          ] : []),
         ],
         criteria: focusedCriteria(clean, state),
       },

@@ -93,7 +93,7 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
     text,
     /31\.6|35\.3|once per second|every second|polling|1\.25|1\.7/,
   );
-  assert.equal(POLICY_VERSION, "land-strategy-v4.5.3-territory-survival-buffer");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.6-win-context");
   assert.match(text, /Prefer affordable early expansion for a land buffer, not idle until capacity/);
   assert.match(text, /tile_losses_until_elimination_threshold assumes no other gains\/losses/);
   assert.match(text, /successful enemy land-tile capture triggers conquest\/remnant cleanup despite reserve, not necessarily zero tiles/);
@@ -116,6 +116,47 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
   assert.match(text, /not a universal conquest guarantee/);
   assert.match(text, /NOT change caused solely by our attacks/);
   assert.ok(text.split(/\s+/).length <= 600, "Keep the strategy prompt bounded and concise");
+});
+
+test("absent win context adds no goal instructions, fabricated clock or ranking", () => {
+  const request = buildRequest(observation());
+  assert.equal(Object.hasOwn(request.state, "win_context"), false);
+  assert.equal(request.questions.action.instructions.length, 8);
+  assert.doesNotMatch(request.questions.action.instructions.join(" "), /With win_context|effective_deadline_remaining_seconds|territory_tiles_behind_leader/);
+});
+
+test("present synthetic win context appends bounded goal wording without changing legacy criteria/instructions", () => {
+  const o = observation();
+  const baseline = buildRequest(o);
+  o.win_context = {
+    game_id: "synthetic-policy-win-context", source_tick: 2991,
+    rule: "ffa_largest_alive_territory_at_timer_or_strict_share",
+    elapsed_seconds: 299, timer_seconds: 300,
+    share_threshold_percent: 80, non_fallout_land_tiles: 10000,
+    eligible_alive_count: 3, self_rank_by_tiles: 3,
+    leading_territory_tiles: 300, tied_leader_count: 1,
+    leader: { id: 3, type: "human" }, // ally is eligible, not an attack permission
+  };
+  const request = buildRequest(o);
+  const q = request.questions.action;
+  assert.deepEqual(request.state, modelState(o));
+  assert.deepEqual(q.criteria, baseline.questions.action.criteria);
+  assert.deepEqual(q.instructions.slice(0, 8), baseline.questions.action.instructions);
+  assert.equal(q.instructions.length, 9);
+  const goal = q.instructions[8];
+  assert.match(goal, /pursue native match victory rather than stockpiling/);
+  assert.match(goal, /waiting while behind can spend the remaining opportunity/);
+  assert.match(goal, /urgency neither guarantees conquest nor authorizes withheld targets/);
+  assert.match(goal, /Competition rank 1 can be a tie/);
+  assert.match(goal, /our_share_exceeds_threshold do not predict the winner/);
+  assert.match(goal, /Engine time is not wall time/);
+  assert.match(goal, /timer-off still has a hard deadline/);
+  assert.match(goal, /Only an actual Win event confirms outcome/);
+  assert.ok(goal.split(/\s+/).length <= 85, "Keep conditional goal addition compact");
+  assert.ok(q.instructions.join(" ").split(/\s+/).length <= 685);
+  assert.equal(q.criteria.attack_player_3_10, undefined); // no rank-driven retarget
+  for (const choice of Object.keys(q.criteria))
+    assert.equal(parseDecision(response(choice), q.criteria).action, choice);
 });
 
 test("omitted structure facts stay absent in model state and target criteria", () => {
@@ -330,6 +371,7 @@ test("missing key does not make a model request", async (t) => {
     "/controller.js",
     "/tribe-focus.js",
     "/neighbor-defenses.js",
+    "/win-context.js",
     "/observation.js",
     "/game-adapter.js",
   ]) {

@@ -211,6 +211,36 @@ function answer(request, choices) {
   };
 }
 
+test("synthetic native deadline context shared at ROOT; City time advice never vetoes any returned choice",()=>{
+  const input=JSON.parse(JSON.stringify(base()).replaceAll("@100#2","@2991#2"));
+  input.snapshot_tick=2991;input.plan=null;
+  input.building.source_tick=2991;input.building.current_tick=2991;
+  const legacy=buildHybridRequest(input);
+  input.land.win_context={game_id:"solo-1",source_tick:2991,
+    rule:"ffa_largest_alive_territory_at_timer_or_strict_share",elapsed_seconds:299,
+    timer_seconds:300,share_threshold_percent:80,non_fallout_land_tiles:10000,
+    eligible_alive_count:4,self_rank_by_tiles:4,leading_territory_tiles:5000,
+    tied_leader_count:1,leader:{id:4,type:"tribe"}};
+  const req=buildHybridRequest(input);
+  assert.equal(req.state.win_context.effective_deadline_remaining_seconds,1);
+  assert.equal(req.state.city_mechanics.construction_seconds,2);
+  assert.equal(req.state.objective,null); // game rule not a Copilot objective
+  assert.match(req.questions.branch.instructions.join(" "),/state.win_context/);
+  assert.match(req.questions.land_action.instructions.join(" "),/native match victory/);
+  for(const name of Object.keys(req.questions))
+    assert.deepEqual(req.questions[name].criteria,legacy.questions[name].criteria);
+  for(const branch of ["wait","city_build","land_attack"]){
+    const result=parseHybridDecision(answer(req,{branch,land_action:"attack_wilderness_10",
+      city_site:"build_city_1"}),req);
+    assert.equal(result.branch,branch);
+    assert.equal(result.kind,branch==="wait"?"wait":branch==="city_build"?"city":"land");
+  }
+  const changed=structuredClone(input);changed.land.win_context.game_id="other-game";
+  assert.throws(()=>validateHybridInput(changed));
+  changed.land.win_context.game_id="solo-1";changed.land.win_context.source_tick=2990;
+  assert.throws(()=>validateHybridInput(changed));
+});
+
 test("boat action is a separate bounded Choice in the same request; Jev branch decides whether it executes", () => {
   const input = withBoat();
   const req = buildHybridRequest(input);
