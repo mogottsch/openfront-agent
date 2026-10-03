@@ -76,7 +76,7 @@ export async function createFocusedEuropeWorld(options, { paceTick } = {}) {
   const { PseudoRandom } = await load("src/core/PseudoRandom.ts");
   const { simpleHash } = await load("src/core/Util.ts");
   const { PlayerInfo, PlayerType, GameMapType, GameMapSize, GameMode,
-    GameType, Difficulty } = await load("src/core/game/Game.ts");
+    GameType, Difficulty, UnitType } = await load("src/core/game/Game.ts");
   const dir = resolve(root, "resources/maps/europe");
   const manifest = JSON.parse(await readFile(resolve(dir, "manifest.json"), "utf8"));
   const terrain = await readFile(resolve(dir, "map4x.bin"));
@@ -137,6 +137,13 @@ export async function createFocusedEuropeWorld(options, { paceTick } = {}) {
       opponents.filter((p) => p.type() === PlayerType.Nation).length !== 3 ||
       opponents.some((p) => !p.hasSpawned())) throw new Error("Native AI roster incomplete");
   return { game, human, clientID, events, step, tickStarts,
+    // Read-only integration seam for future hybrid headless adapters; no
+    // gameplay/config change, wrapper mutation, or automatic extra intent.
+    runner, config, UnitType,
+    read: () => ({ tick: game.ticks(),
+      ready: !game.inSpawnPhase() && human.hasSpawned() && human.isAlive() &&
+        game.getWinner() === null,
+      ended: !human.isAlive() || game.getWinner() !== null }),
     metadata: { engineCommit: execFileSync("git", ["-C", root, "rev-parse", "HEAD"],
       { encoding: "utf8" }).trim(), map: "Europe", mapSize: "Compact", difficulty: "Easy",
       width: game.width(), height: game.height(), humanSpawn: HUMAN_SPAWN,
