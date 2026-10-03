@@ -163,7 +163,7 @@ test("frozen 08:35:10: already attacked tribe246 before Jev opened tribe222", ()
   const row = frozen.firstSpread;
   const request = buildRequest(observationAt(row));
   const q = request.questions.action;
-  assert.equal(POLICY_VERSION, "land-strategy-v4.5-tribe-progress");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.5.1-reference-clock-clarity");
   assert.equal(row.oldChoice, "attack_player_222_10");
   assert.equal(
     request.state.neighbors.find((p) => p.id === 246).our_active_attack_troops,
@@ -326,7 +326,8 @@ test("retreating/zero-force attack is not falsely marked as a current focus", ()
 
 // Observed Easy first50 row50 facts: target50 remained alive at 3,145 tiles,
 // own reserve 19,927/46,137, defender reserve 2,348, no active outgoing stack.
-// First-send target tiles were 1,925. The panel reported six emitted 10%
+// First-send PRE-INFERENCE decision-snapshot target tiles were 1,925.
+// They are not a territory measurement at emission time. The panel reported six emitted 10%
 // intents. IMPORTANT: row50 is captured BEFORE the sixth send; its input history
 // therefore has five prior emissions. Tick/elapsed below are SYNTHETIC test-only
 // because that browser capture did not record authoritative GameView ticks.
@@ -352,12 +353,20 @@ test("frozen Easy row50 progress supports considering 20% but preserves Jev's 10
   const request = buildRequest(stalledEasyFocus());
   const progress = request.state.tribe_focus.progress;
   assert.equal(progress.reference_tiles, 1925);
+  assert.equal(progress.reference_tick, 100); // synthetic observation baseline, NOT emission tick
+  assert.equal(progress.reference_tick_semantics, "decision_observation_snapshot_not_emission_time");
+  assert.equal(progress.elapsed_ticks, 30); // synthetic time since observation, NOT since send
   assert.equal(progress.territory_delta_since_reference, 1220);
   assert.equal(progress.land_intents_emitted, 5);
   assert.equal(request.state.tribe_focus.our_active_attack_troops, 0);
   const q = request.questions.action;
   assert.deepEqual(Object.keys(q.criteria), ["wait", "attack_player_50_10", "attack_player_50_20"]);
   assert.equal(q.criteria.attack_player_50_20.focus_progress_facts.current_target_tiles, 3145);
+  for (const criterion of Object.values(q.criteria)) {
+    assert.equal(criterion.focus_progress_facts.reference_tick_semantics,
+      "decision_observation_snapshot_not_emission_time");
+  }
+  assert.match(q.instructions.join(" "), /elapsed_ticks is time since reference observation, not emission or acceptance/);
   assert.match(q.criteria.attack_player_50_20.focus_send_size_context, /not an automatic escalation/);
   assert.match(q.instructions.join(" "), /compare a legal 20% option with 10% and wait/);
   assert.match(q.instructions.join(" "), /NOT change caused solely by our attacks/);
@@ -376,6 +385,9 @@ test("unknown recovered progress stays unknown; active push and signed reduction
     land_intents_emitted: null, last_land_send_percent: null };
   o.outgoing_attacks = [{ id: "active50", target_id: 50, troops: 5000, retreating: false }];
   const request = buildRequest(o);
+  assert.equal(request.state.tribe_focus.progress.reference_tick_semantics, "authoritative_focus_observation_snapshot");
+  assert.equal(request.questions.action.criteria.wait.focus_progress_facts.reference_tick_semantics,
+    "authoritative_focus_observation_snapshot");
   assert.equal(request.state.tribe_focus.progress.territory_delta_since_reference, -355);
   assert.equal(request.state.tribe_focus.progress.land_intents_emitted, null);
   assert.equal(request.questions.action.criteria.wait.focus_progress_facts.land_intents_emitted, null);

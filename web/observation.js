@@ -410,6 +410,11 @@ export function modelState(observation) {
             ? {
                 progress: {
                   ...o.tribe_focus.progress,
+                  reference_tick_semantics:
+                    o.tribe_focus.progress.reference_kind ===
+                    "first_emitted_land_intent"
+                      ? "decision_observation_snapshot_not_emission_time"
+                      : "authoritative_focus_observation_snapshot",
                   territory_delta_since_reference:
                     o.tribe_focus.territory_tiles -
                     o.tribe_focus.progress.reference_tiles,

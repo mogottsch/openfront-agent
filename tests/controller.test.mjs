@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { LandController } from "../web/controller.js";
 import { observation } from "./fixtures/land.mjs";
+import { projectTribeFocus } from "../web/tribe-focus.js";
+import { modelState } from "../web/observation.js";
 
 function setup({ action = "attack_wilderness_10", decide } = {}) {
   let time = 0;
@@ -260,6 +262,57 @@ test("controller persists Jev's tribe focus after the outgoing stack ends", asyn
   const second = s.events.filter((x) => x.decision).at(-1).decision;
   assert.equal(second.observation.strategy.mode, "finish_focused_tribe");
   assert.equal(second.observation.tribe_focus.our_active_attack_troops, 0);
+});
+
+test("focus progress labels delayed send's decision-observation clock, not emission time", async () => {
+  let release;
+  const s = setup({
+    decide: () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  });
+  s.input.neighbors[0].type = "tribe";
+  s.input.incoming_attacks[0].attacker_type = "tribe";
+  s.controller.start({ limit: 1 });
+  await setImmediate();
+  // Model/worker can finish on a later tick, still within the freshness cap.
+  s.setTime(800);
+  s.status.tick = 108;
+  release({ action: "attack_player_2_10" });
+  await setImmediate();
+  assert.deepEqual(s.sent, [{ target: 2, fraction: 0.1 }]);
+  assert.equal(s.controller.focusProgress.reference_tick, 100);
+  s.input.outgoing_attacks = [];
+  const next = projectTribeFocus(
+    {
+      tick: 120,
+      observation: s.input,
+      focus_status: {
+        status: "available",
+        id: 2,
+        tick: 120,
+        game_id: "game",
+        player_id: "tribe-2",
+        alive: true,
+        type: "tribe",
+        territory_tiles: 100,
+        adjacent: true,
+        worker_checked: true,
+        can_attack: true,
+        target_reserve_troops: 1000,
+      },
+    },
+    2,
+    s.controller.focusProgress,
+  );
+  const progress = modelState(next.observation).tribe_focus.progress;
+  assert.equal(progress.elapsed_ticks, 20); // since observed100, not emitted108
+  assert.equal(
+    progress.reference_tick_semantics,
+    "decision_observation_snapshot_not_emission_time",
+  );
+  assert.equal(progress.land_intents_emitted, 1);
 });
 
 test("unavailable focus skips paid decision; only authoritative death releases it", async () => {

@@ -93,7 +93,10 @@ test("prompt encodes the reviewed priorities and combined-force defense, not har
     text,
     /31\.6|35\.3|once per second|every second|polling|1\.25|1\.7/,
   );
-  assert.equal(POLICY_VERSION, "land-strategy-v4.5-tribe-progress");
+  assert.equal(POLICY_VERSION, "land-strategy-v4.5.1-reference-clock-clarity");
+  assert.match(text, /reference_tick\/reference_tiles are the PRE-INFERENCE decision snapshot associated with the first successfully emitted land intent, NOT emission time/);
+  assert.match(text, /For recovered focus they are the first authoritative focus observation/);
+  assert.match(text, /reference_tick_semantics labels this; elapsed_ticks is time since reference observation, not emission or acceptance/);
   assert.match(text, /land_intents_emitted counts emitted intents, not accepted or completed pushes/);
   assert.match(text, /null means history unknown/);
   assert.match(text, /last_land_send_percent describes only the latest send/);

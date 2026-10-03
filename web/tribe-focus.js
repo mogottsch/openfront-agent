@@ -123,6 +123,10 @@ export function projectTribeFocus(snapshot, focusId, history = null) {
   };
 }
 
+// Called ONLY after send=true. `tick` and target tiles are from that send's
+// decision OBSERVATION, which can precede actual emission by up to the allowed
+// 2s/20ticks. Counts mean emitted intents; elapsed means since this reference
+// observation, NOT since emission. Model state repeats this provenance.
 export function recordTribeLandIntent(
   previousHistory,
   observation,
