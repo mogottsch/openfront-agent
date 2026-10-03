@@ -7,6 +7,7 @@ export const LOGIC_SOURCES = [
   'src/policy.mjs', 'src/hybrid-policy.mjs', 'src/naval-decomposed-policy.mjs',
   'web/observation.js', 'web/naval-observation.js', 'web/controller.js',
   'web/hybrid-controller.js', 'web/tribe-focus.js', 'web/neighbor-defenses.js',
+  'web/win-context.js',
   'web/game-adapter.js', 'web/building-adapter.js', 'web/defense-post-adapter.js',
   'web/naval-adapter.js', 'web/spatial-map.js', 'web/naval-spatial.js',
   'web/hybrid-observation.js', 'web/defense-observation.js',

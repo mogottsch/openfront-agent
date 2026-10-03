@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { LOGIC_SOURCES, instructionsFrom, readLogicState } from '../scripts/harness-logic-state.mjs';
 import { createViewer } from '../scripts/serve-a-checkin.mjs';
-import { buildExampleSet } from '../scripts/harness-logic-examples.mjs';
+import { buildExampleSet, exampleInput } from '../scripts/harness-logic-examples.mjs';
+import { buildHybridRequest } from '../src/hybrid-policy.mjs';
 import { createHash } from 'node:crypto';
 
 async function fixture() {
@@ -110,6 +111,17 @@ test('documentation examples use exact pure builders, preserve caps/identity, an
   assert.equal(e.families.post.criterion.candidate_id, e.families.post.candidate.id);
   assert.deepEqual(e.focus.offeredKeys, ['wait', 'attack_player_2_10', 'attack_player_2_20']);
   assert.equal(e.inventory.source_tick, e.input.snapshot_tick);
+  assert.equal(e.winContext.raw.source_tick, e.input.snapshot_tick);
+  assert.equal(e.winContext.raw.game_id, e.input.game_id);
+  assert.deepEqual(e.winContext.model, e.families.city.request.state.win_context);
+  assert.deepEqual(e.winContext.model.eligible_types, ['human', 'nation', 'tribe']);
+  assert.equal(e.winContext.model.elapsed_seconds, 9.9);
+  assert.equal(e.winContext.model.effective_deadline_remaining_seconds, 290.1);
+  assert.equal(e.winContext.model.hard_deadline_seconds, 10200);
+  assert.equal(e.families.city.request.state.objective, null);
+  const late = exampleInput();
+  late.land.win_context.elapsed_seconds = 301;
+  assert.deepEqual(Object.keys(buildHybridRequest(late).questions.city_site.criteria), ['save_gold', 'build_city_1'], 'Deadline context does not secretly veto an offered City');
   for (const family of Object.values(e.families)) {
     assert.doesNotMatch(JSON.stringify(family.request), /"tile"|"target_shore_tile"|"source_shore_tile"|"destination_tile"|"token"/);
   }

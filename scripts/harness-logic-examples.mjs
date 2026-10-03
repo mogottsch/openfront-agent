@@ -20,6 +20,14 @@ export function exampleInput() {
       { id: 3, type: 'human', relationship: 'ally', shared_border_edges: 3, troops: 3000, troop_capacity: 12000, territory_tiles: 300, can_attack: false, incoming_attacks: [] },
     ],
     incoming_attacks: [], outgoing_attacks: [],
+    win_context: {
+      game_id: 'demo', source_tick: 100,
+      rule: 'ffa_largest_alive_territory_at_timer_or_strict_share',
+      elapsed_seconds: 9.9, timer_seconds: 300, share_threshold_percent: 80,
+      non_fallout_land_tiles: 568335, eligible_alive_count: 3,
+      self_rank_by_tiles: 1, leading_territory_tiles: 500,
+      tied_leader_count: 1, leader: { id: 1, type: 'human' },
+    },
   };
   return {
     game_id: 'demo', snapshot_tick: 100, land, plan: null,
@@ -71,6 +79,7 @@ export function buildExampleSet() {
     },
     focus: { raw: focusLand.tribe_focus, model: modelState(focusLand).tribe_focus, strategy: modelState(focusLand).strategy, offeredKeys: Object.keys(focused.questions.action.criteria) },
     inventory: input.land.neighbors[0].structures,
+    winContext: { raw: input.land.win_context, model: request.state.win_context },
     questionKeys: Object.keys(decomposed.questions),
   };
 }
