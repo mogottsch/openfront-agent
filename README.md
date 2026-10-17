@@ -10,6 +10,8 @@ Earlier evidence remains distinct: the [short20](docs/focus-easy-v4.5.3-validati
 
 **v4.6 source slice:** optional native Win context adds actual engine time, configured/hard deadline and complete eligible territory standings summary, including BOT tribes. It preserves every offered action and returned wait. **420 tests and a network-free actual-native MOCK3 browser/core parity check** pass. The [first real20](docs/focus-easy-v4.6-validation.md) delivered actual Win context on every request, retained one tribe focus and captured6,750 gold; censored20s, not deadline-pressure or victory evidence. Source and running `/health` versions remain distinct until explicit restart. See [contract, native rules and evidence](docs/win-context.md).
 
+**Interrupted v4.6 full-match attempt:** the intended 300-call cap ended after21 successful replies/22 local attempts at21game seconds, alive2,861tiles; no Win/City and no confirmed historical Stop revocation. The generic decision error does not establish HTTP529 or a service/gameplay cause. Later October17 idle-service restoration is a different observation, not a retry or failure explanation. See [exact retained evidence and log slicing](docs/hybrid-easy-v4.6-interrupted-match.md).
+
 ## What Jev sees and can do
 
 The observation describes:
